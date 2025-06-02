@@ -259,7 +259,7 @@ public struct ComputationalCost: Codable, Sendable {
     public let memoryAccessed: Int
     
     /// Cache hits/misses
-    public let cacheStatistics: CacheStatistics
+    public let cacheStatistics: ComputeCacheStatistics
     
     /// GPU/Metal computations used
     public let gpuComputations: Int
@@ -268,10 +268,16 @@ public struct ComputationalCost: Codable, Sendable {
     public let wallClockTime: UInt64
 }
 
-public struct CacheStatistics: Codable, Sendable {
+public struct ComputeCacheStatistics: Codable, Sendable {
     public let hits: Int
     public let misses: Int
     public let hitRate: Float
+    
+    public init(hits: Int, misses: Int, hitRate: Float) {
+        self.hits = hits
+        self.misses = misses
+        self.hitRate = hitRate
+    }
 }
 
 /// Quality metrics for approximate search results

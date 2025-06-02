@@ -8,6 +8,7 @@ import simd
 // MARK: - Core Index Protocol
 
 /// Advanced vector index protocol with research capabilities
+@available(macOS 10.15, iOS 13.0, *)
 public protocol VectorIndex: Actor {
     
     // MARK: - Associated Types
@@ -99,7 +100,7 @@ public protocol VectorIndex: Actor {
     func export(format: ExportFormat) async throws -> Data
     
     /// Import index data
-    func import(data: Data, format: ExportFormat) async throws
+    func `import`(data: Data, format: ExportFormat) async throws
     
     // MARK: - Research & Analysis
     
@@ -116,6 +117,7 @@ public protocol VectorIndex: Actor {
 // MARK: - Storage Backend Protocol
 
 /// Advanced storage backend with research capabilities
+@available(macOS 10.15, iOS 13.0, *)
 public protocol StorageBackend: Actor {
     
     // MARK: - Associated Types
@@ -197,6 +199,7 @@ public protocol StorageBackend: Actor {
 // MARK: - Cache Protocol
 
 /// Advanced caching with ML-driven eviction policies
+@available(macOS 10.15, iOS 13.0, *)
 public protocol VectorCache: Actor {
     
     // MARK: - Associated Types
@@ -415,6 +418,7 @@ public enum OptimizationStrategy: Sendable {
     case aggressive
     case learned(model: String)
     case adaptive
+    case intelligent
 }
 
 /// Export formats for research and backup
@@ -437,9 +441,9 @@ public enum SearchFilter: Sendable {
 public struct MetadataFilter: Sendable {
     public let key: String
     public let operation: FilterOperation
-    public let value: Any
+    public let value: String // Changed from Any to String for Sendable compliance
     
-    public init(key: String, operation: FilterOperation, value: Any) {
+    public init(key: String, operation: FilterOperation, value: String) {
         self.key = key
         self.operation = operation
         self.value = value
@@ -462,7 +466,7 @@ public struct VectorFilter: Sendable {
 public enum VectorConstraint: Sendable {
     case magnitude(ClosedRange<Float>)
     case sparsity(ClosedRange<Float>)
-    case custom((any SIMD) -> Bool)
+    case custom(@Sendable (any SIMD) -> Bool)
 }
 
 public struct CompositeFilter: Sendable {
@@ -477,7 +481,7 @@ public enum LogicalOperation: Sendable {
 public struct LearnedFilter: Sendable {
     public let modelIdentifier: String
     public let confidence: Float
-    public let parameters: [String: Any]
+    public let parameters: [String: String] // Changed from Any to String for Sendable compliance
 }
 
 /// Compression capabilities
@@ -684,7 +688,7 @@ public struct ThroughputProfile: Sendable {
 public struct VisualizationData: Sendable {
     public let nodePositions: [[Float]]
     public let edges: [(Int, Int, Float)]
-    public let nodeMetadata: [String: Any]
+    public let nodeMetadata: [String: String] // Changed from Any to String for Sendable compliance
     public let layoutAlgorithm: String
 }
 
@@ -708,4 +712,5 @@ public enum RecommendationType: String, Sendable {
     case policyChange = "policy_change"
     case prefetching = "prefetching"
     case partitioning = "partitioning"
+    case indexOptimization = "index_optimization"
 }

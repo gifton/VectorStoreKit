@@ -12,6 +12,7 @@ import simd
 /// VectorStore provides a high-performance, feature-rich vector database
 /// optimized for Apple platforms with cutting-edge algorithms and deep
 /// hardware integration.
+@available(macOS 10.15, iOS 13.0, *)
 public actor VectorStore<Vector: SIMD, Metadata: Codable & Sendable>: Sendable 
 where Vector.Scalar: BinaryFloatingPoint {
     
@@ -420,7 +421,7 @@ where Vector.Scalar: BinaryFloatingPoint {
     /// - Parameters:
     ///   - data: Data to import
     ///   - format: Data format
-    public func import(data: Data, format: ExportFormat) async throws {
+    public func `import`(data: Data, format: ExportFormat) async throws {
         try await ensureReady()
         
         switch format {
@@ -645,7 +646,7 @@ where Vector.Scalar: BinaryFloatingPoint {
 
 // MARK: - Store State
 
-enum StoreState: String, Sendable {
+public enum StoreState: String, Sendable {
     case initializing = "initializing"
     case ready = "ready"
     case optimizing = "optimizing"
@@ -656,7 +657,7 @@ enum StoreState: String, Sendable {
 // MARK: - Store Configuration
 
 /// Configuration for vector store behavior
-public struct StoreConfiguration {
+public struct StoreConfiguration: Sendable {
     public let maxBatchSize: Int
     public let performanceMonitoring: Bool
     public let integrityChecking: Bool
@@ -784,7 +785,7 @@ public enum VectorStoreError: Error, Sendable {
 // MARK: - Supporting Types
 
 /// Insert options for advanced control
-public struct InsertOptions {
+public struct InsertOptions: Sendable {
     public let compression: CompressionLevel
     public let durability: DurabilityLevel
     public let priority: StoragePriority
@@ -839,11 +840,11 @@ enum AccessType {
 }
 
 /// Placeholder types for comprehensive system
-public struct OperationMetrics {}
-public struct PerformanceStatistics {}
-public struct AccessStatistics {}
-public struct PerformanceHealthReport {}
-public struct AccessPatternReport {}
+public struct OperationMetrics: Sendable {}
+public struct PerformanceStatistics: Sendable {}
+public struct AccessStatistics: Sendable {}
+public struct PerformanceHealthReport: Sendable {}
+public struct AccessPatternReport: Sendable {}
 public struct OptimizationRecommendation {
     public let type: RecommendationType
     public let priority: Severity
