@@ -19,7 +19,7 @@ public typealias Timestamp = UInt64
 // MARK: - Advanced Vector Entry
 
 /// A sophisticated vector entry with comprehensive metadata and research capabilities
-public struct VectorEntry<Vector: SIMD, Metadata: Codable & Sendable>: Codable, Sendable 
+public struct VectorEntry<Vector: SIMD & Sendable, Metadata: Codable & Sendable>: Codable, Sendable 
 where Vector.Scalar: BinaryFloatingPoint {
     
     // MARK: - Core Properties
@@ -143,7 +143,7 @@ public struct VectorQuality: Codable, Sendable {
     where V.Scalar: BinaryFloatingPoint {
         // Measure how well this vector would compress via quantization
         let values = (0..<vector.scalarCount).map { Float(vector[$0]) }
-        let range = values.max()! - values.min()!
+        let _ = values.max()! - values.min()!
         let uniqueValues = Set(values.map { ($0 * 1000).rounded() / 1000 }).count
         return 1.0 - Float(uniqueValues) / Float(values.count)
     }
@@ -176,7 +176,7 @@ public struct AccessPattern: Codable, Sendable {
     private var recentAccesses: [Timestamp] = []
     
     /// Maximum number of recent accesses to track
-    private let maxRecentAccesses = 100
+    private var maxRecentAccesses = 100
     
     /// Record a new access for pattern analysis
     public mutating func recordAccess(at timestamp: Timestamp) {
@@ -329,6 +329,3 @@ public enum CapacityLevel: Sendable {
     case low, medium, high, unlimited, adaptive
 }
 
-public enum CompressionLevel: Sendable {
-    case none, light, aggressive, maximum, adaptive
-}

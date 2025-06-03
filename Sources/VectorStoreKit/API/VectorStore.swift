@@ -12,9 +12,19 @@ import simd
 /// VectorStore provides a high-performance, feature-rich vector database
 /// optimized for Apple platforms with cutting-edge algorithms and deep
 /// hardware integration.
-@available(macOS 10.15, iOS 13.0, *)
-public actor VectorStore<Vector: SIMD, Metadata: Codable & Sendable>: Sendable 
-where Vector.Scalar: BinaryFloatingPoint {
+public actor VectorStore<
+    Vector: SIMD & Sendable,
+    Metadata: Codable & Sendable,
+    Index: VectorIndex,
+    Storage: StorageBackend,
+    Cache: VectorCache
+>: Sendable 
+where 
+    Vector.Scalar: BinaryFloatingPoint,
+    Index.Vector == Vector,
+    Index.Metadata == Metadata,
+    Cache.Vector == Vector 
+{
     
     // MARK: - Core Properties
     
@@ -22,13 +32,13 @@ where Vector.Scalar: BinaryFloatingPoint {
     private let configuration: StoreConfiguration
     
     /// Primary index for vector operations
-    private let primaryIndex: any VectorIndex
+    private let primaryIndex: Index
     
     /// Storage backend for persistence
-    private let storageBackend: any StorageBackend
+    private let storageBackend: Storage
     
     /// Cache for hot data
-    private let cache: any VectorCache
+    private let cache: Cache
     
     /// Performance monitoring
     private let performanceMonitor: PerformanceMonitor
@@ -44,30 +54,11 @@ where Vector.Scalar: BinaryFloatingPoint {
     
     // MARK: - Initialization
     
-    /// Initialize vector store with universe configuration
-    internal init(configuration: UniverseConfiguration) async throws {
-        // Extract components from configuration
-        self.configuration = try StoreConfiguration(from: configuration)
-        
-        // Initialize core components
-        self.primaryIndex = try await Self.createIndex(from: configuration)
-        self.storageBackend = try await Self.createStorage(from: configuration)
-        self.cache = try await Self.createCache(from: configuration)
-        
-        // Initialize monitoring and analysis
-        self.performanceMonitor = PerformanceMonitor()
-        self.integrityManager = IntegrityManager()
-        self.accessAnalyzer = AccessPatternAnalyzer()
-        
-        // Complete initialization
-        try await initialize()
-    }
-    
-    /// Initialize with explicit components (for advanced users)
+    /// Initialize with explicit components
     public init(
-        index: any VectorIndex,
-        storage: any StorageBackend,
-        cache: any VectorCache,
+        index: Index,
+        storage: Storage,
+        cache: Cache,
         configuration: StoreConfiguration = .research
     ) async throws {
         self.configuration = configuration
@@ -102,11 +93,7 @@ where Vector.Scalar: BinaryFloatingPoint {
     
     // MARK: - Core Operations
     
-    /// Add vectors to the store
-    /// - Parameters:
-    ///   - entries: Vector entries to add
-    ///   - options: Insert options
-    /// - Returns: Detailed insert result
+    /// Add multiple vector entries with comprehensive tracking
     public func add(
         _ entries: [VectorEntry<Vector, Metadata>],
         options: InsertOptions = .default
@@ -114,10 +101,9 @@ where Vector.Scalar: BinaryFloatingPoint {
         try await ensureReady()
         
         let startTime = DispatchTime.now()
-        let operation = Operation.insert(count: entries.count)
+        let operation = Operation.bulkInsert(count: entries.count)
         
         await performanceMonitor.beginOperation(operation)
-        defer { Task { await self.performanceMonitor.endOperation(operation) } }
         
         // Validate entries
         try validateEntries(entries)
@@ -127,37 +113,53 @@ where Vector.Scalar: BinaryFloatingPoint {
         var totalUpdated = 0
         var errors: [VectorStoreError] = []
         
-        // Process entries
-        for entry in entries {
-            do {
-                // Update access pattern
-                await accessAnalyzer.recordAccess(for: entry.id, type: .insert)
-                
-                // Insert into index
-                let indexResult = try await primaryIndex.insert(entry)
-                
-                // Store in persistence layer
-                try await storeEntry(entry, options: options)
-                
-                // Update cache if hot tier
-                if entry.tier == .hot {
-                    await cache.set(id: entry.id, vector: entry.vector, priority: .normal)
+        // Process entries concurrently using Swift 5.10's improved TaskGroup
+        await withTaskGroup(of: (VectorID, Result<InsertResult, Error>).self) { group in
+            // Add tasks for each entry
+            for entry in entries {
+                group.addTask {
+                    do {
+                        // Update access pattern
+                        await self.accessAnalyzer.recordAccess(for: entry.id, type: .insert)
+                        
+                        // Insert into index
+                        let indexResult = try await self.primaryIndex.insert(entry)
+                        
+                        // Store in persistence layer
+                        try await self.storeEntry(entry, options: options)
+                        
+                        // Update cache if hot tier
+                        if entry.tier == .hot {
+                            await self.cache.set(id: entry.id, vector: entry.vector, priority: .normal)
+                        }
+                        
+                        return (entry.id, .success(indexResult))
+                    } catch {
+                        return (entry.id, .failure(error))
+                    }
                 }
-                
-                results[entry.id] = indexResult
-                
-                if indexResult.success {
-                    totalInserted += 1
-                } else {
-                    totalUpdated += 1
+            }
+            
+            // Collect results
+            for await (id, result) in group {
+                switch result {
+                case .success(let indexResult):
+                    results[id] = indexResult
+                    if indexResult.success {
+                        totalInserted += 1
+                    } else {
+                        totalUpdated += 1
+                    }
+                case .failure(let error):
+                    errors.append(VectorStoreError.insertion(id, error))
                 }
-                
-            } catch {
-                errors.append(VectorStoreError.insertion(entry.id, error))
             }
         }
         
         let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+        
+        // End performance monitoring
+        await performanceMonitor.endOperation(operation)
         
         return DetailedInsertResult(
             insertedCount: totalInserted,
@@ -170,16 +172,10 @@ where Vector.Scalar: BinaryFloatingPoint {
         )
     }
     
-    /// Search for similar vectors
-    /// - Parameters:
-    ///   - query: Query vector
-    ///   - k: Number of results
-    ///   - strategy: Search strategy
-    ///   - filter: Optional filter
-    /// - Returns: Comprehensive search results
+    /// Search for similar vectors with comprehensive analysis
     public func search(
         query: Vector,
-        k: Int = 10,
+        k: Int,
         strategy: SearchStrategy = .adaptive,
         filter: SearchFilter? = nil
     ) async throws -> ComprehensiveSearchResult<Metadata> {
@@ -189,7 +185,6 @@ where Vector.Scalar: BinaryFloatingPoint {
         let operation = Operation.search(k: k, strategy: strategy)
         
         await performanceMonitor.beginOperation(operation)
-        defer { Task { await self.performanceMonitor.endOperation(operation) } }
         
         // Validate query
         try validateQuery(query)
@@ -213,6 +208,9 @@ where Vector.Scalar: BinaryFloatingPoint {
         
         let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
         
+        // End performance monitoring
+        await performanceMonitor.endOperation(operation)
+        
         return ComprehensiveSearchResult(
             results: results,
             queryTime: TimeInterval(duration) / 1_000_000_000.0,
@@ -224,11 +222,6 @@ where Vector.Scalar: BinaryFloatingPoint {
     }
     
     /// Update an existing vector
-    /// - Parameters:
-    ///   - id: Vector identifier
-    ///   - vector: New vector data
-    ///   - metadata: New metadata
-    /// - Returns: Update result with metrics
     public func update(
         id: VectorID,
         vector: Vector? = nil,
@@ -240,9 +233,8 @@ where Vector.Scalar: BinaryFloatingPoint {
         let operation = Operation.update(id: id)
         
         await performanceMonitor.beginOperation(operation)
-        defer { Task { await self.performanceMonitor.endOperation(operation) } }
         
-        // Record access
+        // Update access pattern
         await accessAnalyzer.recordAccess(for: id, type: .update)
         
         // Update in index
@@ -250,7 +242,7 @@ where Vector.Scalar: BinaryFloatingPoint {
         
         if success {
             // Update in storage
-            try await updateStoredEntry(id: id, vector: vector, metadata: metadata)
+            try await updateInStorage(id: id, vector: vector, metadata: metadata)
             
             // Update cache if present
             if let newVector = vector {
@@ -260,6 +252,8 @@ where Vector.Scalar: BinaryFloatingPoint {
         
         let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
         
+        await performanceMonitor.endOperation(operation)
+        
         return UpdateResult(
             success: success,
             updateTime: TimeInterval(duration) / 1_000_000_000.0,
@@ -267,200 +261,118 @@ where Vector.Scalar: BinaryFloatingPoint {
         )
     }
     
-    /// Delete vectors from the store
-    /// - Parameter ids: Vector identifiers to delete
-    /// - Returns: Deletion result with metrics
-    public func delete(ids: [VectorID]) async throws -> DeletionResult {
+    /// Delete a vector
+    public func delete(id: VectorID) async throws -> DeleteResult {
         try await ensureReady()
         
         let startTime = DispatchTime.now()
-        let operation = Operation.delete(count: ids.count)
+        let operation = Operation.delete(id: id)
         
         await performanceMonitor.beginOperation(operation)
-        defer { Task { await self.performanceMonitor.endOperation(operation) } }
         
-        var deletedCount = 0
-        var errors: [VectorStoreError] = []
+        // Remove from index
+        let success = try await primaryIndex.delete(id: id)
         
-        for id in ids {
-            do {
-                // Record access
-                await accessAnalyzer.recordAccess(for: id, type: .delete)
-                
-                // Delete from index
-                let success = try await primaryIndex.delete(id: id)
-                
-                if success {
-                    // Delete from storage
-                    try await storageBackend.delete(key: id)
-                    
-                    // Remove from cache
-                    await cache.remove(id: id)
-                    
-                    deletedCount += 1
-                }
-            } catch {
-                errors.append(VectorStoreError.deletion(id, error))
-            }
+        if success {
+            // Remove from storage
+            try await storageBackend.delete(key: id)
+            
+            // Remove from cache
+            await cache.remove(id: id)
+            
+            // Update access patterns
+            await accessAnalyzer.recordDeletion(id: id)
         }
         
         let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
         
-        return DeletionResult(
-            deletedCount: deletedCount,
-            errorCount: errors.count,
-            errors: errors,
+        await performanceMonitor.endOperation(operation)
+        
+        return DeleteResult(
+            success: success,
             deleteTime: TimeInterval(duration) / 1_000_000_000.0,
             performanceMetrics: await performanceMonitor.getMetrics(for: operation)
         )
     }
     
-    /// Check if vectors exist in the store
-    /// - Parameter ids: Vector identifiers to check
-    /// - Returns: Dictionary of existence results
-    public func contains(ids: [VectorID]) async -> [VectorID: Bool] {
-        var results: [VectorID: Bool] = [:]
-        
-        for id in ids {
-            await accessAnalyzer.recordAccess(for: id, type: .access)
-            results[id] = await primaryIndex.contains(id: id)
-        }
-        
-        return results
-    }
-    
     // MARK: - Advanced Operations
     
-    /// Get comprehensive store statistics
-    public func statistics() async -> StoreStatistics {
-        let indexStats = await primaryIndex.statistics()
-        let storageStats = await storageBackend.statistics()
-        let cacheStats = await cache.statistics()
-        let performanceStats = await performanceMonitor.getStatistics()
-        let accessStats = await accessAnalyzer.getStatistics()
-        
-        return StoreStatistics(
-            vectorCount: await primaryIndex.count,
-            memoryUsage: await primaryIndex.memoryUsage,
-            diskUsage: await storageBackend.size,
-            indexStatistics: indexStats,
-            storageStatistics: storageStats,
-            cacheStatistics: cacheStats,
-            performanceStatistics: performanceStats,
-            accessStatistics: accessStats
-        )
-    }
-    
-    /// Optimize the store for better performance
-    /// - Parameter strategy: Optimization strategy
-    public func optimize(strategy: OptimizationStrategy = .intelligent) async throws {
+    /// Optimize the vector store for better performance
+    public func optimize(strategy: OptimizationStrategy = .adaptive) async throws {
         try await ensureReady()
         
-        let startTime = DispatchTime.now()
+        let operation = Operation.optimization(strategy: strategy)
+        await performanceMonitor.beginOperation(operation)
         
         // Optimize index
         try await primaryIndex.optimize(strategy: strategy)
         
-        // Optimize storage
+        // Compact storage
         try await storageBackend.compact()
         
-        // Optimize cache
+        // Optimize cache based on access patterns
+        let patterns = await accessAnalyzer.getAccessPatterns()
         await cache.optimize()
         
-        // Update access patterns
-        await accessAnalyzer.optimize()
+        // Prefetch frequently accessed vectors
+        let predictions = patterns.topAccessed(count: 100)
+            .reduce(into: [:]) { dict, pattern in
+                dict[pattern.id] = pattern.accessFrequency
+            }
+        await cache.prefetch(predictions)
         
-        let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
-        
-        await performanceMonitor.recordOptimization(
-            strategy: strategy,
-            duration: TimeInterval(duration) / 1_000_000_000.0
-        )
+        await performanceMonitor.endOperation(operation)
     }
     
-    /// Validate store integrity
-    public func validateIntegrity() async throws -> ComprehensiveIntegrityReport {
-        let indexReport = try await primaryIndex.validateIntegrity()
-        let storageReport = try await storageBackend.validateIntegrity()
-        let performanceReport = await performanceMonitor.healthCheck()
+    /// Get comprehensive statistics
+    public func statistics() async -> StoreStatistics {
+        let indexStats = await primaryIndex.statistics()
+        let storageStats = await storageBackend.statistics()
+        let cacheStats = await cache.statistics()
+        let performanceStats = await performanceMonitor.overallStatistics()
+        let accessStats = await accessAnalyzer.statistics()
         
-        return ComprehensiveIntegrityReport(
-            overall: indexReport.isValid && storageReport.isHealthy,
-            indexIntegrity: indexReport,
-            storageIntegrity: storageReport,
-            performanceHealth: performanceReport,
-            recommendations: generateRecommendations(
-                indexReport: indexReport,
-                storageReport: storageReport,
-                performanceReport: performanceReport
-            )
+        let stats = StoreStatistics(
+            vectorCount: await primaryIndex.count,
+            memoryUsage: await totalMemoryUsage(),
+            diskUsage: await storageBackend.size,
+            performanceStatistics: performanceStats,
+            accessStatistics: accessStats,
+            indexStatisticsSnapshot: IndexStatisticsSnapshot(from: indexStats),
+            storageStatisticsSnapshot: StorageStatisticsSnapshot(from: storageStats),
+            cacheStatisticsSnapshot: CacheStatisticsSnapshot(from: cacheStats)
         )
+        return stats
     }
     
-    /// Export store data for research or backup
-    /// - Parameter format: Export format
-    /// - Returns: Exported data
-    public func export(format: ExportFormat) async throws -> Data {
+    /// Export store for backup or analysis
+    public func export(format: ExportFormat = .binary) async throws -> Data {
         try await ensureReady()
         
-        switch format {
-        case .binary:
-            return try await exportBinary()
-        case .json:
-            return try await exportJSON()
-        case .hdf5:
-            return try await exportHDF5()
-        case .arrow:
-            return try await exportArrow()
-        case .custom:
-            return try await exportCustom()
-        }
-    }
-    
-    /// Import store data
-    /// - Parameters:
-    ///   - data: Data to import
-    ///   - format: Data format
-    public func `import`(data: Data, format: ExportFormat) async throws {
-        try await ensureReady()
+        let operation = Operation.export(format: format)
+        await performanceMonitor.beginOperation(operation)
         
-        switch format {
-        case .binary:
-            try await importBinary(data)
-        case .json:
-            try await importJSON(data)
-        case .hdf5:
-            try await importHDF5(data)
-        case .arrow:
-            try await importArrow(data)
-        case .custom:
-            try await importCustom(data)
-        }
+        // Export index data
+        let indexData = try await primaryIndex.export(format: format)
+        
+        // Export metadata
+        let metadata = StoreMetadata(
+            version: "1.0",
+            vectorType: String(describing: Vector.self),
+            metadataType: String(describing: Metadata.self),
+            configuration: configuration,
+            statistics: await statistics()
+        )
+        
+        // Combine into final export
+        let result = try combineExport(indexData: indexData, metadata: metadata, format: format)
+        
+        await performanceMonitor.endOperation(operation)
+        
+        return result
     }
     
-    // MARK: - Research Operations
-    
-    /// Analyze vector distribution in the store
-    public func analyzeDistribution() async -> DistributionAnalysis {
-        return await primaryIndex.analyzeDistribution()
-    }
-    
-    /// Get performance profile for different operations
-    public func performanceProfile() async -> PerformanceProfile {
-        return await primaryIndex.performanceProfile()
-    }
-    
-    /// Generate visualization data for research
-    public func visualizationData() async -> VisualizationData {
-        return await primaryIndex.visualizationData()
-    }
-    
-    /// Analyze access patterns for optimization
-    public func accessPatternAnalysis() async -> AccessPatternReport {
-        return await accessAnalyzer.generateReport()
-    }
-    
-    // MARK: - Private Implementation
+    // MARK: - Private Helpers
     
     private func ensureReady() async throws {
         guard state == .ready else {
@@ -470,229 +382,242 @@ where Vector.Scalar: BinaryFloatingPoint {
     
     private func validateEntries(_ entries: [VectorEntry<Vector, Metadata>]) throws {
         guard !entries.isEmpty else {
-            throw VectorStoreError.validation("No entries provided")
+            throw VectorStoreError.validation("Empty entries array")
         }
         
-        guard entries.count <= configuration.maxBatchSize else {
-            throw VectorStoreError.validation("Batch size exceeds maximum")
-        }
-        
-        // Validate dimensions consistency
-        if let firstEntry = entries.first {
-            let expectedDimensions = firstEntry.vector.scalarCount
-            for entry in entries {
-                guard entry.vector.scalarCount == expectedDimensions else {
-                    throw VectorStoreError.dimensionMismatch(
-                        expected: expectedDimensions,
-                        actual: entry.vector.scalarCount
-                    )
-                }
+        let expectedDimension = Vector.scalarCount
+        for entry in entries {
+            if entry.vector.scalarCount != expectedDimension {
+                throw VectorStoreError.dimensionMismatch(
+                    expected: expectedDimension,
+                    actual: entry.vector.scalarCount
+                )
             }
         }
     }
     
     private func validateQuery(_ query: Vector) throws {
-        // Query validation logic
-        let magnitude = sqrt((query * query).sum())
-        guard magnitude > 0 else {
-            throw VectorStoreError.validation("Zero vector query")
+        let expectedDimension = Vector.scalarCount
+        if query.scalarCount != expectedDimension {
+            throw VectorStoreError.dimensionMismatch(
+                expected: expectedDimension,
+                actual: query.scalarCount
+            )
         }
     }
     
     private func storeEntry(_ entry: VectorEntry<Vector, Metadata>, options: InsertOptions) async throws {
-        let encodedEntry = try JSONEncoder().encode(entry)
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(entry)
+        
         let storageOptions = StorageOptions(
-            compression: options.compression,
-            durability: options.durability,
-            priority: options.priority
+            compression: options.useCompression ? .adaptive : .none,
+            durability: options.durabilityLevel,
+            priority: .normal
         )
         
-        try await storageBackend.store(key: entry.id, data: encodedEntry, options: storageOptions)
+        try await storageBackend.store(key: entry.id, data: data, options: storageOptions)
     }
     
-    private func updateStoredEntry(id: VectorID, vector: Vector?, metadata: Metadata?) async throws {
-        // Implementation for updating stored entries
-        // This would involve reading, modifying, and writing back the entry
+    private func updateInStorage(id: VectorID, vector: Vector?, metadata: Metadata?) async throws {
+        // Retrieve existing entry
+        guard let existingData = try await storageBackend.retrieve(key: id) else {
+            throw VectorStoreError.storageError("Entry not found in storage")
+        }
+        
+        let decoder = JSONDecoder()
+        var entry = try decoder.decode(VectorEntry<Vector, Metadata>.self, from: existingData)
+        
+        // Update fields
+        if let newVector = vector {
+            entry = VectorEntry(
+                id: entry.id,
+                vector: newVector,
+                metadata: metadata ?? entry.metadata,
+                tier: entry.tier
+            )
+        } else if let newMetadata = metadata {
+            entry = VectorEntry(
+                id: entry.id,
+                vector: entry.vector,
+                metadata: newMetadata,
+                tier: entry.tier
+            )
+        }
+        
+        // Store updated entry
+        let encoder = JSONEncoder()
+        let updatedData = try encoder.encode(entry)
+        try await storageBackend.store(key: id, data: updatedData, options: .default)
     }
     
     private func loadExistingData() async throws {
-        // Implementation for loading existing data from storage
-        // This would scan storage and rebuild indexes as needed
+        // Implementation depends on storage backend capabilities
+        // For now, we'll skip loading on initialization
+    }
+    
+    private func totalMemoryUsage() async -> Int {
+        let indexMemory = await primaryIndex.memoryUsage
+        let cacheMemory = await cache.memoryUsage
+        let monitorMemory = await performanceMonitor.memoryUsage
+        return indexMemory + cacheMemory + monitorMemory
     }
     
     private func analyzeSearchQuality(_ results: [SearchResult<Metadata>], query: Vector) async -> SearchQualityMetrics {
-        // Analyze search result quality
+        // Simplified quality analysis
+        let relevanceScore = results.isEmpty ? 0.0 : 1.0 - results.first!.distance
+        let diversityScore = calculateDiversityScore(results)
+        
         return SearchQualityMetrics(
-            relevanceScore: calculateRelevance(results, query: query),
-            diversityScore: calculateDiversity(results),
-            coverageScore: calculateCoverage(results),
-            consistencyScore: calculateConsistency(results)
+            relevanceScore: relevanceScore,
+            diversityScore: diversityScore,
+            coverageScore: Float(results.count) / Float(max(1, await primaryIndex.count)),
+            consistencyScore: 0.95 // Placeholder
         )
     }
     
-    private func calculateRelevance(_ results: [SearchResult<Metadata>], query: Vector) -> Float {
-        // Calculate relevance score based on distance distribution
-        guard !results.isEmpty else { return 0.0 }
+    private func calculateDiversityScore(_ results: [SearchResult<Metadata>]) -> Float {
+        guard results.count > 1 else { return 1.0 }
         
-        let distances = results.map { $0.distance }
-        let avgDistance = distances.reduce(0, +) / Float(distances.count)
+        var totalDistance: Float = 0
+        var comparisons = 0
         
-        // Relevance is inversely related to average distance
-        return 1.0 / (1.0 + avgDistance)
-    }
-    
-    private func calculateDiversity(_ results: [SearchResult<Metadata>]) -> Float {
-        // Calculate diversity among results
-        // This is a simplified implementation
-        return min(1.0, Float(Set(results.map { $0.id }).count) / Float(results.count))
-    }
-    
-    private func calculateCoverage(_ results: [SearchResult<Metadata>]) -> Float {
-        // Calculate coverage of result space
-        // This would involve analyzing the spread of results
-        return 1.0 // Placeholder
-    }
-    
-    private func calculateConsistency(_ results: [SearchResult<Metadata>]) -> Float {
-        // Calculate consistency of results
-        // This would involve analyzing ranking stability
-        return 1.0 // Placeholder
-    }
-    
-    private func generateRecommendations(
-        indexReport: IntegrityReport,
-        storageReport: StorageIntegrityReport,
-        performanceReport: PerformanceHealthReport
-    ) -> [OptimizationRecommendation] {
-        var recommendations: [OptimizationRecommendation] = []
-        
-        // Generate recommendations based on reports
-        if !indexReport.isValid {
-            recommendations.append(OptimizationRecommendation(
-                type: .indexOptimization,
-                priority: .high,
-                description: "Index integrity issues detected",
-                expectedImprovement: 0.3
-            ))
+        for i in 0..<results.count {
+            for j in (i+1)..<min(i+5, results.count) { // Compare with next 4 results
+                totalDistance += abs(results[i].distance - results[j].distance)
+                comparisons += 1
+            }
         }
         
-        return recommendations
+        return comparisons > 0 ? totalDistance / Float(comparisons) : 0
     }
     
-    // MARK: - Export/Import Implementations
-    
-    private func exportBinary() async throws -> Data {
-        // Binary export implementation
-        return Data()
-    }
-    
-    private func exportJSON() async throws -> Data {
-        // JSON export implementation
-        return Data()
-    }
-    
-    private func exportHDF5() async throws -> Data {
-        // HDF5 export implementation
-        return Data()
-    }
-    
-    private func exportArrow() async throws -> Data {
-        // Apache Arrow export implementation
-        return Data()
-    }
-    
-    private func exportCustom() async throws -> Data {
-        // Custom format export implementation
-        return Data()
-    }
-    
-    private func importBinary(_ data: Data) async throws {
-        // Binary import implementation
-    }
-    
-    private func importJSON(_ data: Data) async throws {
-        // JSON import implementation
-    }
-    
-    private func importHDF5(_ data: Data) async throws {
-        // HDF5 import implementation
-    }
-    
-    private func importArrow(_ data: Data) async throws {
-        // Apache Arrow import implementation
-    }
-    
-    private func importCustom(_ data: Data) async throws {
-        // Custom format import implementation
-    }
-    
-    // MARK: - Factory Methods
-    
-    private static func createIndex(from configuration: UniverseConfiguration) async throws -> any VectorIndex {
-        // Factory method to create appropriate index based on configuration
-        fatalError("Index creation not yet implemented")
-    }
-    
-    private static func createStorage(from configuration: UniverseConfiguration) async throws -> any StorageBackend {
-        // Factory method to create appropriate storage based on configuration
-        fatalError("Storage creation not yet implemented")
-    }
-    
-    private static func createCache(from configuration: UniverseConfiguration) async throws -> any VectorCache {
-        // Factory method to create appropriate cache based on configuration
-        fatalError("Cache creation not yet implemented")
+    private func combineExport(indexData: Data, metadata: StoreMetadata, format: ExportFormat) throws -> Data {
+        switch format {
+        case .binary:
+            var combined = Data()
+            
+            // Write magic number
+            combined.append(contentsOf: "VSTR".utf8)
+            
+            // Write version
+            combined.append(contentsOf: [1, 0, 0, 0]) // Version 1.0.0.0
+            
+            // Write metadata size and data
+            let encoder = JSONEncoder()
+            let metadataData = try encoder.encode(metadata)
+            var metadataSize = UInt64(metadataData.count)
+            combined.append(Data(bytes: &metadataSize, count: 8))
+            combined.append(metadataData)
+            
+            // Write index data
+            combined.append(indexData)
+            
+            return combined
+            
+        case .json:
+            let exportObject = ExportContainer(
+                metadata: metadata,
+                indexData: indexData.base64EncodedString()
+            )
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            return try encoder.encode(exportObject)
+            
+        default:
+            throw VectorStoreError.exportError("Unsupported export format: \(format)")
+        }
     }
 }
 
-// MARK: - Store State
+// MARK: - Supporting Types
 
+/// Store state enumeration
 public enum StoreState: String, Sendable {
-    case initializing = "initializing"
-    case ready = "ready"
-    case optimizing = "optimizing"
-    case error = "error"
-    case shutdown = "shutdown"
+    case initializing
+    case ready
+    case optimizing
+    case error
 }
 
-// MARK: - Store Configuration
+/// Operation types for monitoring
+public enum Operation: Sendable, Hashable {
+    case bulkInsert(count: Int)
+    case search(k: Int, strategy: SearchStrategy)
+    case update(id: VectorID)
+    case delete(id: VectorID)
+    case optimization(strategy: OptimizationStrategy)
+    case export(format: ExportFormat)
+}
 
-/// Configuration for vector store behavior
-public struct StoreConfiguration: Sendable {
-    public let maxBatchSize: Int
-    public let performanceMonitoring: Bool
-    public let integrityChecking: Bool
-    public let researchMode: Bool
+/// Insert options
+public struct InsertOptions: Sendable {
+    public let useCompression: Bool
+    public let durabilityLevel: DurabilityLevel
+    public let validateIntegrity: Bool
+    public let parallel: Bool
     
     public init(
-        maxBatchSize: Int = 10_000,
-        performanceMonitoring: Bool = true,
-        integrityChecking: Bool = true,
-        researchMode: Bool = false
+        useCompression: Bool = true,
+        durabilityLevel: DurabilityLevel = .standard,
+        validateIntegrity: Bool = true,
+        parallel: Bool = true
     ) {
-        self.maxBatchSize = maxBatchSize
-        self.performanceMonitoring = performanceMonitoring
-        self.integrityChecking = integrityChecking
-        self.researchMode = researchMode
+        self.useCompression = useCompression
+        self.durabilityLevel = durabilityLevel
+        self.validateIntegrity = validateIntegrity
+        self.parallel = parallel
+    }
+    
+    public static let `default` = InsertOptions()
+    public static let fast = InsertOptions(useCompression: false, durabilityLevel: .none, validateIntegrity: false)
+    public static let safe = InsertOptions(useCompression: true, durabilityLevel: .strict, validateIntegrity: true)
+}
+
+/// Store configuration
+public struct StoreConfiguration: Sendable {
+    public let name: String
+    public let enableProfiling: Bool
+    public let enableAnalytics: Bool
+    public let integrityCheckInterval: TimeInterval
+    public let optimizationThreshold: Int
+    
+    public init(
+        name: String = "VectorStore",
+        enableProfiling: Bool = true,
+        enableAnalytics: Bool = true,
+        integrityCheckInterval: TimeInterval = 3600,
+        optimizationThreshold: Int = 100_000
+    ) {
+        self.name = name
+        self.enableProfiling = enableProfiling
+        self.enableAnalytics = enableAnalytics
+        self.integrityCheckInterval = integrityCheckInterval
+        self.optimizationThreshold = optimizationThreshold
     }
     
     public static let research = StoreConfiguration(
-        maxBatchSize: 50_000,
-        performanceMonitoring: true,
-        integrityChecking: true,
-        researchMode: true
+        name: "ResearchVectorStore",
+        enableProfiling: true,
+        enableAnalytics: true,
+        integrityCheckInterval: 1800,
+        optimizationThreshold: 50_000
     )
     
-    internal init(from universeConfig: UniverseConfiguration) throws {
-        // Extract configuration from universe configuration
-        self.maxBatchSize = 10_000
-        self.performanceMonitoring = true
-        self.integrityChecking = true
-        self.researchMode = true
-    }
+    public static let production = StoreConfiguration(
+        name: "ProductionVectorStore",
+        enableProfiling: false,
+        enableAnalytics: false,
+        integrityCheckInterval: 7200,
+        optimizationThreshold: 200_000
+    )
     
     func validate() throws {
-        guard maxBatchSize > 0 else {
-            throw VectorStoreError.validation("Invalid batch size")
+        guard integrityCheckInterval > 0 else {
+            throw VectorStoreError.validation("Integrity check interval must be positive")
+        }
+        guard optimizationThreshold > 0 else {
+            throw VectorStoreError.validation("Optimization threshold must be positive")
         }
     }
 }
@@ -700,7 +625,7 @@ public struct StoreConfiguration: Sendable {
 // MARK: - Result Types
 
 /// Detailed insert result with comprehensive metrics
-public struct DetailedInsertResult {
+public struct DetailedInsertResult: Sendable {
     public let insertedCount: Int
     public let updatedCount: Int
     public let errorCount: Int
@@ -711,7 +636,7 @@ public struct DetailedInsertResult {
 }
 
 /// Comprehensive search result with detailed analysis
-public struct ComprehensiveSearchResult<Metadata: Codable & Sendable> {
+public struct ComprehensiveSearchResult<Metadata: Codable & Sendable>: Sendable {
     public let results: [SearchResult<Metadata>]
     public let queryTime: TimeInterval
     public let totalCandidates: Int
@@ -721,48 +646,99 @@ public struct ComprehensiveSearchResult<Metadata: Codable & Sendable> {
 }
 
 /// Update result with performance metrics
-public struct UpdateResult {
+public struct UpdateResult: Sendable {
     public let success: Bool
     public let updateTime: TimeInterval
     public let performanceMetrics: OperationMetrics
 }
 
-/// Deletion result with detailed metrics
-public struct DeletionResult {
-    public let deletedCount: Int
-    public let errorCount: Int
-    public let errors: [VectorStoreError]
+/// Delete result with performance metrics  
+public struct DeleteResult: Sendable {
+    public let success: Bool
     public let deleteTime: TimeInterval
     public let performanceMetrics: OperationMetrics
 }
 
+/// Store metadata for export
+private struct StoreMetadata: Codable, Sendable {
+    let version: String
+    let vectorType: String
+    let metadataType: String
+    let configuration: StoreConfiguration
+    let statistics: StoreStatistics
+}
+
+/// Export container
+private struct ExportContainer: Codable, Sendable {
+    let metadata: StoreMetadata
+    let indexData: String
+}
+
 /// Comprehensive store statistics
-public struct StoreStatistics {
+public struct StoreStatistics: Sendable, Codable {
     public let vectorCount: Int
     public let memoryUsage: Int
     public let diskUsage: Int
-    public let indexStatistics: any IndexStatistics
-    public let storageStatistics: any StorageStatistics
-    public let cacheStatistics: any CacheStatistics
     public let performanceStatistics: PerformanceStatistics
     public let accessStatistics: AccessStatistics
+    
+    // Statistics are now stored as sendable snapshots instead of protocol existentials
+    @CodableIgnored
+    public var indexStatisticsSnapshot: IndexStatisticsSnapshot?
+    @CodableIgnored
+    public var storageStatisticsSnapshot: StorageStatisticsSnapshot?
+    @CodableIgnored
+    public var cacheStatisticsSnapshot: CacheStatisticsSnapshot?
+    
+    internal init(
+        vectorCount: Int,
+        memoryUsage: Int,
+        diskUsage: Int,
+        performanceStatistics: PerformanceStatistics,
+        accessStatistics: AccessStatistics,
+        indexStatisticsSnapshot: IndexStatisticsSnapshot? = nil,
+        storageStatisticsSnapshot: StorageStatisticsSnapshot? = nil,
+        cacheStatisticsSnapshot: CacheStatisticsSnapshot? = nil
+    ) {
+        self.vectorCount = vectorCount
+        self.memoryUsage = memoryUsage
+        self.diskUsage = diskUsage
+        self.performanceStatistics = performanceStatistics
+        self.accessStatistics = accessStatistics
+        self.indexStatisticsSnapshot = indexStatisticsSnapshot
+        self.storageStatisticsSnapshot = storageStatisticsSnapshot
+        self.cacheStatisticsSnapshot = cacheStatisticsSnapshot
+    }
+    
+    private enum CodingKeys: String, CodingKey {
+        case vectorCount, memoryUsage, diskUsage, performanceStatistics, accessStatistics
+    }
+}
+
+/// Property wrapper to exclude properties from Codable
+@propertyWrapper
+public struct CodableIgnored<T: Sendable>: Codable, Sendable {
+    public var wrappedValue: T?
+    
+    public init(wrappedValue: T?) {
+        self.wrappedValue = wrappedValue
+    }
+    
+    public init(from decoder: Decoder) throws {
+        self.wrappedValue = nil
+    }
+    
+    public func encode(to encoder: Encoder) throws {
+        // Don't encode anything
+    }
 }
 
 /// Search quality metrics for research
-public struct SearchQualityMetrics {
+public struct SearchQualityMetrics: Sendable {
     public let relevanceScore: Float
     public let diversityScore: Float
     public let coverageScore: Float
     public let consistencyScore: Float
-}
-
-/// Comprehensive integrity report
-public struct ComprehensiveIntegrityReport {
-    public let overall: Bool
-    public let indexIntegrity: IntegrityReport
-    public let storageIntegrity: StorageIntegrityReport
-    public let performanceHealth: PerformanceHealthReport
-    public let recommendations: [OptimizationRecommendation]
 }
 
 // MARK: - Vector Store Error
@@ -779,75 +755,175 @@ public enum VectorStoreError: Error, Sendable {
     case cacheError(String)
     case integrityError(String)
     case exportError(String)
+    case storeNotAvailable
     case importError(String)
 }
 
 // MARK: - Supporting Types
 
-/// Insert options for advanced control
-public struct InsertOptions: Sendable {
-    public let compression: CompressionLevel
-    public let durability: DurabilityLevel
-    public let priority: StoragePriority
+/// Performance monitoring
+public actor PerformanceMonitor: Sendable {
+    private var operations: [Operation: OperationMetrics] = [:]
+    private var startTimes: [Operation: DispatchTime] = [:]
     
-    public init(
-        compression: CompressionLevel = .adaptive,
-        durability: DurabilityLevel = .standard,
-        priority: StoragePriority = .normal
-    ) {
-        self.compression = compression
-        self.durability = durability
-        self.priority = priority
+    public init() {}
+    
+    public func start() async {
+        // Initialize monitoring
     }
     
-    public static let `default` = InsertOptions()
+    public func beginOperation(_ operation: Operation) async {
+        startTimes[operation] = DispatchTime.now()
+    }
+    
+    public func endOperation(_ operation: Operation) async {
+        guard let startTime = startTimes[operation] else { return }
+        let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+        
+        let metrics = OperationMetrics(
+            duration: TimeInterval(duration) / 1_000_000_000.0,
+            memoryUsed: 0, // Placeholder
+            cpuUsage: 0,   // Placeholder
+            timestamp: Date()
+        )
+        
+        operations[operation] = metrics
+        startTimes[operation] = nil
+    }
+    
+    public func getMetrics(for operation: Operation) async -> OperationMetrics {
+        operations[operation] ?? OperationMetrics(duration: 0, memoryUsed: 0, cpuUsage: 0, timestamp: Date())
+    }
+    
+    public func overallStatistics() async -> PerformanceStatistics {
+        PerformanceStatistics()
+    }
+    
+    public var memoryUsage: Int {
+        MemoryLayout<Self>.size + operations.count * MemoryLayout<OperationMetrics>.size
+    }
 }
 
-/// Operation types for performance monitoring
-enum Operation {
-    case insert(count: Int)
-    case search(k: Int, strategy: SearchStrategy)
-    case update(id: VectorID)
-    case delete(count: Int)
+/// Operation metrics
+public struct OperationMetrics: Sendable {
+    public let duration: TimeInterval
+    public let memoryUsed: Int
+    public let cpuUsage: Float
+    public let timestamp: Date
 }
 
-/// Performance monitoring placeholder
-actor PerformanceMonitor {
-    func start() async {}
-    func beginOperation(_ operation: Operation) async {}
-    func endOperation(_ operation: Operation) async {}
-    func getMetrics(for operation: Operation) async -> OperationMetrics { OperationMetrics() }
-    func getStatistics() async -> PerformanceStatistics { PerformanceStatistics() }
-    func recordOptimization(strategy: OptimizationStrategy, duration: TimeInterval) async {}
-    func healthCheck() async -> PerformanceHealthReport { PerformanceHealthReport() }
-}
+public struct PerformanceStatistics: Sendable, Codable {}
+public struct AccessStatistics: Sendable, Codable {}
 
-/// Integrity management placeholder
-actor IntegrityManager {
-    func initialize() async {}
-}
-
-/// Access pattern analysis placeholder
-actor AccessPatternAnalyzer {
-    func recordAccess(for id: VectorID, type: AccessType) async {}
-    func getStatistics() async -> AccessStatistics { AccessStatistics() }
-    func optimize() async {}
-    func generateReport() async -> AccessPatternReport { AccessPatternReport() }
-}
-
-enum AccessType {
-    case insert, search, access, update, delete
-}
-
-/// Placeholder types for comprehensive system
-public struct OperationMetrics: Sendable {}
-public struct PerformanceStatistics: Sendable {}
-public struct AccessStatistics: Sendable {}
-public struct PerformanceHealthReport: Sendable {}
-public struct AccessPatternReport: Sendable {}
-public struct OptimizationRecommendation {
-    public let type: RecommendationType
-    public let priority: Severity
+/// Sendable snapshot of index statistics
+public struct IndexStatisticsSnapshot: Sendable {
+    public let vectorCount: Int
+    public let memoryUsage: Int
+    public let averageSearchLatency: TimeInterval
     public let description: String
-    public let expectedImprovement: Float
+    
+    public init(from stats: any IndexStatistics) {
+        self.vectorCount = stats.vectorCount
+        self.memoryUsage = stats.memoryUsage
+        self.averageSearchLatency = stats.averageSearchLatency
+        self.description = String(describing: stats)
+    }
+}
+
+/// Sendable snapshot of storage statistics  
+public struct StorageStatisticsSnapshot: Sendable {
+    public let totalSize: Int
+    public let description: String
+    
+    public init(from stats: any StorageStatistics) {
+        self.totalSize = stats.totalSize
+        self.description = String(describing: stats)
+    }
+}
+
+/// Sendable snapshot of cache statistics
+public struct CacheStatisticsSnapshot: Sendable {
+    public let hits: Int
+    public let misses: Int
+    public let hitRate: Float
+    public let memoryUsage: Int
+    public let description: String
+    
+    public init(from stats: any CacheStatistics) {
+        self.hits = stats.hits
+        self.misses = stats.misses
+        self.hitRate = stats.hitRate
+        self.memoryUsage = stats.memoryEfficiency > 0 ? Int(Float(stats.hits + stats.misses) * stats.memoryEfficiency) : 0
+        self.description = String(describing: stats)
+    }
+}
+
+/// Integrity management
+public actor IntegrityManager: Sendable {
+    public init() {}
+    
+    public func initialize() async {
+        // Initialize integrity checking
+    }
+}
+
+/// Access pattern analysis
+public actor AccessPatternAnalyzer: Sendable {
+    private var accessRecords: [VectorID: AccessRecord] = [:]
+    
+    public init() {}
+    
+    public func recordAccess(for id: VectorID, type: AccessType) async {
+        if let existing = accessRecords[id] {
+            accessRecords[id] = AccessRecord(
+                id: id,
+                count: existing.count + 1,
+                lastAccess: Date(),
+                type: type
+            )
+        } else {
+            accessRecords[id] = AccessRecord(id: id, count: 1, lastAccess: Date(), type: type)
+        }
+    }
+    
+    public func recordDeletion(id: VectorID) async {
+        accessRecords[id] = nil
+    }
+    
+    public func getAccessPatterns() async -> AccessPatterns {
+        AccessPatterns(records: Array(accessRecords.values))
+    }
+    
+    public func statistics() async -> AccessStatistics {
+        AccessStatistics()
+    }
+}
+
+public enum AccessType: Sendable {
+    case insert, search, update, access
+}
+
+fileprivate struct AccessRecord: Sendable {
+    let id: VectorID
+    let count: Int
+    let lastAccess: Date
+    let type: AccessType
+}
+
+public struct AccessPatterns: Sendable {
+    fileprivate let records: [AccessRecord]
+    
+    func topAccessed(count: Int) -> [(id: VectorID, accessFrequency: Float)] {
+        records
+            .sorted { $0.count > $1.count }
+            .prefix(count)
+            .map { ($0.id, Float($0.count)) }
+    }
+}
+
+// Extensions to make StoreConfiguration Codable
+extension StoreConfiguration: Codable {
+    enum CodingKeys: String, CodingKey {
+        case name, enableProfiling, enableAnalytics, integrityCheckInterval, optimizationThreshold
+    }
 }

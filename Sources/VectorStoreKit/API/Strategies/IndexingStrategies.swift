@@ -5,11 +5,71 @@
 import Foundation
 import simd
 
+// MARK: - Supporting Errors
+
+/// Validation errors for index configurations
+public enum IndexValidationError: Error {
+    case invalidParameter(String)
+}
+
+
+// MARK: - Simple HNSW Indexing Strategy for VectorUniverse
+
+/// Simple HNSW indexing strategy for direct use with VectorUniverse
+public struct HNSWIndexingStrategy<Vector: SIMD & Sendable, Metadata: Codable & Sendable>: IndexingStrategy, Sendable 
+where Vector.Scalar: BinaryFloatingPoint {
+    public typealias Config = HNSWIndex<Vector, Metadata>.Configuration
+    public typealias IndexType = HNSWIndex<Vector, Metadata>
+    
+    public let identifier = "hnsw"
+    public let characteristics = IndexCharacteristics(
+        approximation: .approximate(quality: 0.95),
+        dynamism: .fullyDynamic,
+        scalability: .excellent,
+        parallelism: .full
+    )
+    
+    private let maxConnections: Int
+    private let efConstruction: Int
+    private let useAdaptiveTuning: Bool
+    
+    public init(
+        maxConnections: Int = 16,
+        efConstruction: Int = 200,
+        useAdaptiveTuning: Bool = false
+    ) {
+        self.maxConnections = maxConnections
+        self.efConstruction = efConstruction
+        self.useAdaptiveTuning = useAdaptiveTuning
+    }
+    
+    public func createIndex() async throws -> IndexType {
+        let config = Config(
+            maxConnections: maxConnections,
+            efConstruction: efConstruction,
+            levelMultiplier: 1.0 / log(2.0),
+            distanceMetric: .euclidean,
+            useAdaptiveTuning: useAdaptiveTuning,
+            optimizationThreshold: 100_000,
+            enableAnalytics: true
+        )
+        
+        return try HNSWIndex(configuration: config)
+    }
+    
+    public func createIndex<V: SIMD, M: Codable & Sendable>(
+        configuration: Config,
+        vectorType: V.Type,
+        metadataType: M.Type
+    ) async throws -> IndexType where V.Scalar: BinaryFloatingPoint {
+        return try HNSWIndex(configuration: configuration)
+    }
+}
+
 // MARK: - HNSW Indexing Strategies
 
 /// Production-optimized HNSW indexing strategy
-@available(macOS 10.15, iOS 13.0, *)
-public struct HNSWProductionIndexingStrategy: IndexingStrategy {
+public struct HNSWProductionIndexingStrategy: IndexingStrategy, Sendable {
     public typealias Config = HNSWIndex<SIMD32<Float>, [String: String]>.Configuration
     public typealias IndexType = HNSWIndex<SIMD32<Float>, [String: String]>
     
@@ -25,6 +85,20 @@ public struct HNSWProductionIndexingStrategy: IndexingStrategy {
     
     public init(configuration: Config? = nil) {
         self.customConfig = configuration
+    }
+    
+    public func createIndex() async throws -> IndexType {
+        let config = customConfig ?? Config(
+            maxConnections: 16,
+            efConstruction: 200,
+            levelMultiplier: 1.0 / log(2.0),
+            distanceMetric: .euclidean,
+            useAdaptiveTuning: true,
+            optimizationThreshold: 100_000,
+            enableAnalytics: true
+        )
+        
+        return try HNSWIndex(configuration: config)
     }
     
     public func createIndex<Vector: SIMD, Metadata: Codable & Sendable>(
@@ -47,8 +121,7 @@ public struct HNSWProductionIndexingStrategy: IndexingStrategy {
 }
 
 /// Research-optimized HNSW indexing strategy with higher quality
-@available(macOS 10.15, iOS 13.0, *)
-public struct HNSWResearchIndexingStrategy: IndexingStrategy {
+public struct HNSWResearchIndexingStrategy: IndexingStrategy, Sendable {
     public typealias Config = HNSWIndex<SIMD32<Float>, [String: String]>.Configuration
     public typealias IndexType = HNSWIndex<SIMD32<Float>, [String: String]>
     
@@ -64,6 +137,20 @@ public struct HNSWResearchIndexingStrategy: IndexingStrategy {
     
     public init(configuration: Config? = nil) {
         self.customConfig = configuration
+    }
+    
+    public func createIndex() async throws -> IndexType {
+        let config = customConfig ?? Config(
+            maxConnections: 32,
+            efConstruction: 400,
+            levelMultiplier: 1.0 / log(2.0),
+            distanceMetric: .euclidean,
+            useAdaptiveTuning: true,
+            optimizationThreshold: 50_000,
+            enableAnalytics: true
+        )
+        
+        return try HNSWIndex(configuration: config)
     }
     
     public func createIndex<Vector: SIMD, Metadata: Codable & Sendable>(
@@ -86,8 +173,7 @@ public struct HNSWResearchIndexingStrategy: IndexingStrategy {
 }
 
 /// Performance-optimized HNSW indexing strategy
-@available(macOS 10.15, iOS 13.0, *)
-public struct HNSWPerformanceIndexingStrategy: IndexingStrategy {
+public struct HNSWPerformanceIndexingStrategy: IndexingStrategy, Sendable {
     public typealias Config = HNSWIndex<SIMD32<Float>, [String: String]>.Configuration
     public typealias IndexType = HNSWIndex<SIMD32<Float>, [String: String]>
     
@@ -103,6 +189,20 @@ public struct HNSWPerformanceIndexingStrategy: IndexingStrategy {
     
     public init(configuration: Config? = nil) {
         self.customConfig = configuration
+    }
+    
+    public func createIndex() async throws -> IndexType {
+        let config = customConfig ?? Config(
+            maxConnections: 8,
+            efConstruction: 100,
+            levelMultiplier: 1.0 / log(2.0),
+            distanceMetric: .euclidean,
+            useAdaptiveTuning: false,
+            optimizationThreshold: 200_000,
+            enableAnalytics: false
+        )
+        
+        return try HNSWIndex(configuration: config)
     }
     
     public func createIndex<Vector: SIMD, Metadata: Codable & Sendable>(
@@ -127,8 +227,7 @@ public struct HNSWPerformanceIndexingStrategy: IndexingStrategy {
 // MARK: - IVF Indexing Strategy
 
 /// Inverted File Index strategy for large-scale similarity search
-@available(macOS 10.15, iOS 13.0, *)
-public struct IVFIndexingStrategy: IndexingStrategy {
+public struct IVFIndexingStrategy: IndexingStrategy, Sendable {
     public typealias Config = IVFConfiguration
     public typealias IndexType = IVFIndex<SIMD32<Float>, [String: String]>
     
@@ -146,6 +245,11 @@ public struct IVFIndexingStrategy: IndexingStrategy {
         self.customConfig = configuration
     }
     
+    public func createIndex() async throws -> IndexType {
+        let config = customConfig ?? IVFConfiguration()
+        return try await IVFIndex(configuration: config)
+    }
+    
     public func createIndex<Vector: SIMD, Metadata: Codable & Sendable>(
         configuration: Config,
         vectorType: Vector.Type,
@@ -157,7 +261,7 @@ public struct IVFIndexingStrategy: IndexingStrategy {
 }
 
 /// IVF index configuration
-public struct IVFConfiguration {
+public struct IVFConfiguration: IndexConfiguration {
     public let nlist: Int          // Number of clusters
     public let nprobe: Int         // Number of clusters to search
     public let quantizer: QuantizerType
@@ -174,9 +278,30 @@ public struct IVFConfiguration {
         self.quantizer = quantizer
         self.useGPU = useGPU
     }
+    
+    public func validate() throws {
+        guard nlist > 0 else {
+            throw IndexValidationError.invalidParameter("nlist must be positive")
+        }
+        guard nprobe > 0 && nprobe <= nlist else {
+            throw IndexValidationError.invalidParameter("nprobe must be between 1 and nlist")
+        }
+    }
+    
+    public func estimatedMemoryUsage(for vectorCount: Int) -> Int {
+        // Estimate based on clusters and vectors
+        let clusterOverhead = nlist * 512 // Centroid storage
+        let indexOverhead = vectorCount * 8 // Index pointers
+        return clusterOverhead + indexOverhead
+    }
+    
+    public func computationalComplexity() -> ComputationalComplexity {
+        // Overall complexity based on search time
+        return .variable  // IVF has variable complexity based on nprobe
+    }
 }
 
-public enum QuantizerType {
+public enum QuantizerType: Sendable, Codable {
     case flat
     case pq(subvectors: Int)
     case sq(bits: Int)
@@ -185,8 +310,7 @@ public enum QuantizerType {
 // MARK: - Learned Indexing Strategy
 
 /// Machine learning-based adaptive indexing strategy
-@available(macOS 10.15, iOS 13.0, *)
-public struct LearnedIndexingStrategy: IndexingStrategy {
+public struct LearnedIndexingStrategy: IndexingStrategy, Sendable {
     public typealias Config = LearnedIndexConfiguration
     public typealias IndexType = LearnedIndex<SIMD32<Float>, [String: String]>
     
@@ -204,6 +328,11 @@ public struct LearnedIndexingStrategy: IndexingStrategy {
         self.customConfig = configuration
     }
     
+    public func createIndex() async throws -> IndexType {
+        let config = customConfig ?? LearnedIndexConfiguration()
+        return try await LearnedIndex(configuration: config)
+    }
+    
     public func createIndex<Vector: SIMD, Metadata: Codable & Sendable>(
         configuration: Config,
         vectorType: Vector.Type,
@@ -215,7 +344,7 @@ public struct LearnedIndexingStrategy: IndexingStrategy {
 }
 
 /// Learned index configuration
-public struct LearnedIndexConfiguration {
+public struct LearnedIndexConfiguration: IndexConfiguration {
     public let modelArchitecture: ModelArchitecture
     public let trainingBudget: TimeInterval
     public let targetRecall: Float
@@ -232,9 +361,40 @@ public struct LearnedIndexConfiguration {
         self.targetRecall = targetRecall
         self.enableOnlineAdaptation = enableOnlineAdaptation
     }
+    
+    public func validate() throws {
+        guard trainingBudget > 0 else {
+            throw IndexValidationError.invalidParameter("Training budget must be positive")
+        }
+        guard targetRecall > 0 && targetRecall <= 1.0 else {
+            throw IndexValidationError.invalidParameter("Target recall must be between 0 and 1")
+        }
+    }
+    
+    public func estimatedMemoryUsage(for vectorCount: Int) -> Int {
+        // Estimate based on model complexity
+        switch modelArchitecture {
+        case .transformer(let heads, let layers):
+            return heads * layers * vectorCount * 32
+        case .autoencoder(let hiddenDimensions):
+            return hiddenDimensions.reduce(0, +) * vectorCount * 4
+        case .neuralHash(let depth):
+            return depth * vectorCount * 16
+        case .hybrid(let primary, let secondary):
+            let primaryConfig = LearnedIndexConfiguration(modelArchitecture: primary)
+            let secondaryConfig = LearnedIndexConfiguration(modelArchitecture: secondary)
+            return primaryConfig.estimatedMemoryUsage(for: vectorCount) + 
+                   secondaryConfig.estimatedMemoryUsage(for: vectorCount)
+        }
+    }
+    
+    public func computationalComplexity() -> ComputationalComplexity {
+        // Machine learning models typically have quadratic training complexity
+        return .quadratic
+    }
 }
 
-public enum ModelArchitecture {
+public indirect enum ModelArchitecture: Sendable, Codable {
     case transformer(heads: Int, layers: Int)
     case autoencoder(hiddenDimensions: [Int])
     case neuralHash(depth: Int)
@@ -243,12 +403,37 @@ public enum ModelArchitecture {
 
 // MARK: - Placeholder Index Implementations
 
+/// IVF index statistics
+public struct IVFIndexStatistics: IndexStatistics {
+    public let vectorCount: Int
+    public let memoryUsage: Int
+    public let averageSearchLatency: TimeInterval
+    public let qualityMetrics: IndexQualityMetrics
+    
+    public init(
+        vectorCount: Int = 0,
+        memoryUsage: Int = 0,
+        averageSearchLatency: TimeInterval = 0,
+        qualityMetrics: IndexQualityMetrics = IndexQualityMetrics(
+            recall: 0.92,
+            precision: 0.95,
+            buildTime: 0.0,
+            memoryEfficiency: 0.8,
+            searchLatency: 0.001
+        )
+    ) {
+        self.vectorCount = vectorCount
+        self.memoryUsage = memoryUsage
+        self.averageSearchLatency = averageSearchLatency
+        self.qualityMetrics = qualityMetrics
+    }
+}
+
 /// Placeholder IVF index implementation
-@available(macOS 10.15, iOS 13.0, *)
 public actor IVFIndex<Vector: SIMD, Metadata: Codable & Sendable>: VectorIndex 
 where Vector.Scalar: BinaryFloatingPoint {
     public typealias Configuration = IVFConfiguration
-    public typealias Statistics = IndexQualityMetrics
+    public typealias Statistics = IVFIndexStatistics
     
     private let config: Configuration
     
@@ -277,7 +462,7 @@ where Vector.Scalar: BinaryFloatingPoint {
     public func optimize(strategy: OptimizationStrategy) async throws {}
     public func compact() async throws {}
     public func statistics() async -> Statistics { 
-        IndexQualityMetrics(recall: 0.92, precision: 0.95, buildTime: 0.0, memoryEfficiency: 0.8, searchLatency: 0.001)
+        IVFIndexStatistics()
     }
     public func validateIntegrity() async throws -> IntegrityReport {
         IntegrityReport(isValid: true, errors: [], warnings: [], statistics: IntegrityStatistics(totalChecks: 1, passedChecks: 1, failedChecks: 0, checkDuration: 0.001))
@@ -306,12 +491,37 @@ where Vector.Scalar: BinaryFloatingPoint {
     }
 }
 
+/// Learned index statistics
+public struct LearnedIndexStatistics: IndexStatistics {
+    public let vectorCount: Int
+    public let memoryUsage: Int
+    public let averageSearchLatency: TimeInterval
+    public let qualityMetrics: IndexQualityMetrics
+    
+    public init(
+        vectorCount: Int = 0,
+        memoryUsage: Int = 0,
+        averageSearchLatency: TimeInterval = 0,
+        qualityMetrics: IndexQualityMetrics = IndexQualityMetrics(
+            recall: 0.96,
+            precision: 0.97,
+            buildTime: 0.0,
+            memoryEfficiency: 0.85,
+            searchLatency: 0.001
+        )
+    ) {
+        self.vectorCount = vectorCount
+        self.memoryUsage = memoryUsage
+        self.averageSearchLatency = averageSearchLatency
+        self.qualityMetrics = qualityMetrics
+    }
+}
+
 /// Placeholder learned index implementation
-@available(macOS 10.15, iOS 13.0, *)
 public actor LearnedIndex<Vector: SIMD, Metadata: Codable & Sendable>: VectorIndex 
 where Vector.Scalar: BinaryFloatingPoint {
     public typealias Configuration = LearnedIndexConfiguration
-    public typealias Statistics = IndexQualityMetrics
+    public typealias Statistics = LearnedIndexStatistics
     
     private let config: Configuration
     
@@ -340,7 +550,7 @@ where Vector.Scalar: BinaryFloatingPoint {
     public func optimize(strategy: OptimizationStrategy) async throws {}
     public func compact() async throws {}
     public func statistics() async -> Statistics { 
-        IndexQualityMetrics(recall: 0.96, precision: 0.97, buildTime: 0.0, memoryEfficiency: 0.85, searchLatency: 0.001)
+        LearnedIndexStatistics()
     }
     public func validateIntegrity() async throws -> IntegrityReport {
         IntegrityReport(isValid: true, errors: [], warnings: [], statistics: IntegrityStatistics(totalChecks: 1, passedChecks: 1, failedChecks: 0, checkDuration: 0.001))

@@ -6,11 +6,39 @@ import Foundation
 import CoreML
 import CreateML
 
+// MARK: - Supporting Types
+
+/// Performance metrics for optimization
+public struct PerformanceMetrics: Sendable {
+    public let searchLatency: LatencyProfile
+    public let insertLatency: LatencyProfile
+    public let insertThroughput: Double
+    public let memoryUsage: Int
+    public let cpuUsage: Double
+    public let queryDistribution: [String: Int]
+    
+    public init(
+        searchLatency: LatencyProfile = LatencyProfile(p50: 0.001, p90: 0.002, p95: 0.003, p99: 0.005, max: 0.01),
+        insertLatency: LatencyProfile = LatencyProfile(p50: 0.001, p90: 0.002, p95: 0.003, p99: 0.005, max: 0.01),
+        insertThroughput: Double = 1000.0,
+        memoryUsage: Int = 0,
+        cpuUsage: Double = 0.5,
+        queryDistribution: [String: Int] = [:]
+    ) {
+        self.searchLatency = searchLatency
+        self.insertLatency = insertLatency
+        self.insertThroughput = insertThroughput
+        self.memoryUsage = memoryUsage
+        self.cpuUsage = cpuUsage
+        self.queryDistribution = queryDistribution
+    }
+}
+
+
 // MARK: - ML Optimization Strategies
 
 /// Production ML-driven optimization strategy
-@available(macOS 10.15, iOS 13.0, *)
-public struct MLProductionOptimizationStrategy: OptimizationStrategyProtocol {
+public struct MLProductionOptimizationStrategy: OptimizationStrategyProtocol, Sendable {
     public typealias ModelType = MLOptimizationModel
     public typealias MetricsType = PerformanceMetrics
     
@@ -22,9 +50,9 @@ public struct MLProductionOptimizationStrategy: OptimizationStrategyProtocol {
         overhead: .low
     )
     
-    private let modelConfiguration: ModelConfiguration
+    private let modelConfiguration: MLOptimizationModel.ModelConfiguration
     
-    public init(modelConfiguration: ModelConfiguration = .production) {
+    public init(modelConfiguration: MLOptimizationModel.ModelConfiguration = .production) {
         self.modelConfiguration = modelConfiguration
     }
     
@@ -59,13 +87,13 @@ public struct MLProductionOptimizationStrategy: OptimizationStrategyProtocol {
         _ recommendations: [OptimizationRecommendation],
         to index: Index
     ) async throws {
-        for recommendation in recommendations where recommendation.risk <= .low {
+        for recommendation in recommendations where recommendation.risk == .low {
             switch recommendation.type {
             case .compact:
                 try await index.compact()
             case .rebalance:
                 try await index.optimize(strategy: .rebalance)
-            case .adjustParameters(let params):
+            case .adjustParameters(_):
                 // Would adjust index parameters in real implementation
                 break
             case .rebuild:
@@ -77,8 +105,7 @@ public struct MLProductionOptimizationStrategy: OptimizationStrategyProtocol {
 }
 
 /// Research ML optimization with experimental features
-@available(macOS 10.15, iOS 13.0, *)
-public struct MLResearchOptimizationStrategy: OptimizationStrategyProtocol {
+public struct MLResearchOptimizationStrategy: OptimizationStrategyProtocol, Sendable {
     public typealias ModelType = MLOptimizationModel
     public typealias MetricsType = DetailedPerformanceMetrics
     
@@ -90,11 +117,11 @@ public struct MLResearchOptimizationStrategy: OptimizationStrategyProtocol {
         overhead: .moderate
     )
     
-    private let modelConfiguration: ModelConfiguration
+    private let modelConfiguration: MLOptimizationModel.ModelConfiguration
     private let experimentalFeatures: Set<ExperimentalFeature>
     
     public init(
-        modelConfiguration: ModelConfiguration = .research,
+        modelConfiguration: MLOptimizationModel.ModelConfiguration = .research,
         experimentalFeatures: Set<ExperimentalFeature> = [.neuralArchitectureSearch, .autoML]
     ) {
         self.modelConfiguration = modelConfiguration
@@ -189,8 +216,7 @@ public struct MLResearchOptimizationStrategy: OptimizationStrategyProtocol {
 // MARK: - Aggressive Optimization Strategy
 
 /// Aggressive optimization for maximum performance
-@available(macOS 10.15, iOS 13.0, *)
-public struct AggressiveOptimizationStrategy: OptimizationStrategyProtocol {
+public struct AggressiveOptimizationStrategy: OptimizationStrategyProtocol, Sendable {
     public typealias ModelType = Void
     public typealias MetricsType = PerformanceMetrics
     
@@ -245,8 +271,7 @@ public struct AggressiveOptimizationStrategy: OptimizationStrategyProtocol {
 // MARK: - Genetic Algorithm Optimization
 
 /// Genetic algorithm-based optimization strategy
-@available(macOS 10.15, iOS 13.0, *)
-public struct GeneticOptimizationStrategy: OptimizationStrategyProtocol {
+public struct GeneticOptimizationStrategy: OptimizationStrategyProtocol, Sendable {
     public typealias ModelType = GeneticAlgorithm
     public typealias MetricsType = PerformanceMetrics
     
@@ -271,7 +296,7 @@ public struct GeneticOptimizationStrategy: OptimizationStrategyProtocol {
         let ga = GeneticAlgorithm(configuration: configuration)
         
         // Define fitness function based on metrics
-        let fitness: (IndexParameters) async -> Double = { params in
+        let fitness: (IndexParameters) async -> Double = { [metrics] params in
             // Evaluate parameter fitness
             let searchScore = 1.0 / (1.0 + metrics.searchLatency.p99)
             let insertScore = 1.0 / (1.0 + metrics.insertLatency.p99)
@@ -313,11 +338,11 @@ public struct GeneticOptimizationStrategy: OptimizationStrategyProtocol {
 
 // MARK: - Supporting Types
 
-public struct MLOptimizationModel {
+public struct MLOptimizationModel: Sendable {
     let configuration: ModelConfiguration
-    let indexCharacteristics: Any
+    let indexCharacteristics: any Sendable
     
-    public enum ModelConfiguration {
+    public enum ModelConfiguration: Sendable {
         case production
         case research
         case experimental
@@ -351,7 +376,7 @@ public struct MLOptimizationModel {
     }
 }
 
-public struct PerformanceAnalysis {
+public struct PerformanceAnalysis: Sendable {
     public let bottlenecks: [PerformanceBottleneck]
     public let opportunities: [OptimizationOpportunity]
     public let risks: [OptimizationRisk]
@@ -363,69 +388,88 @@ public struct PerformanceAnalysis {
     }
 }
 
-public struct PerformanceBottleneck {
+public struct PerformanceBottleneck: Sendable {
     public let component: String
     public let severity: Severity
     public let impact: Double
 }
 
-public struct OptimizationOpportunity {
+public struct OptimizationOpportunity: Sendable {
     public let type: OpportunityType
     public let potentialImprovement: Double
     public let effort: EffortLevel
 }
 
-public struct OptimizationRisk {
+public struct OptimizationRisk: Sendable {
     public let description: String
     public let probability: Double
     public let impact: ImpactLevel
 }
 
-public enum Severity {
-    case low, medium, high, critical
-}
-
-public enum OpportunityType {
+public enum OpportunityType: Sendable {
     case parameterTuning
     case structuralChange
     case algorithmSwitch
     case hardwareUtilization
 }
 
-public enum EffortLevel {
+public enum EffortLevel: Sendable {
     case trivial, low, medium, high, extreme
 }
 
-public enum ImpactLevel {
-    case negligible, minor, moderate, major, severe
-}
-
-public enum ExperimentalFeature {
+public enum ExperimentalFeature: Sendable {
     case neuralArchitectureSearch
     case autoML
     case reinforcementLearning
     case quantumInspired
 }
 
-public struct DetailedPerformanceMetrics {
+public struct DetailedPerformanceMetrics: Sendable {
     public let basic: PerformanceMetrics
     public let advanced: AdvancedMetrics
     
-    public struct AdvancedMetrics {
+    public init(basic: PerformanceMetrics = PerformanceMetrics(), advanced: AdvancedMetrics = AdvancedMetrics()) {
+        self.basic = basic
+        self.advanced = advanced
+    }
+    
+    public struct AdvancedMetrics: Sendable {
         public let cacheHitRate: Double
         public let branchPredictionAccuracy: Double
         public let vectorizationEfficiency: Double
         public let memoryAccessPatterns: MemoryAccessPattern
+        
+        public init(
+            cacheHitRate: Double = 0.8,
+            branchPredictionAccuracy: Double = 0.9,
+            vectorizationEfficiency: Double = 0.7,
+            memoryAccessPatterns: MemoryAccessPattern = .sequential
+        ) {
+            self.cacheHitRate = cacheHitRate
+            self.branchPredictionAccuracy = branchPredictionAccuracy
+            self.vectorizationEfficiency = vectorizationEfficiency
+            self.memoryAccessPatterns = memoryAccessPatterns
+        }
     }
 }
 
-public struct MemoryAccessPattern {
+public struct MemoryAccessPattern: Sendable {
+    public static let sequential = MemoryAccessPattern(sequential: 1.0, random: 0.0, strided: 0.0)
+    public static let random = MemoryAccessPattern(sequential: 0.0, random: 1.0, strided: 0.0)
+    public static let strided = MemoryAccessPattern(sequential: 0.0, random: 0.0, strided: 1.0)
+    
     public let sequential: Double
     public let random: Double
     public let strided: Double
+    
+    public init(sequential: Double, random: Double, strided: Double) {
+        self.sequential = sequential
+        self.random = random
+        self.strided = strided
+    }
 }
 
-public struct GeneticConfiguration {
+public struct GeneticConfiguration: Sendable {
     public let populationSize: Int
     public let generations: Int
     public let mutationRate: Double
@@ -441,7 +485,7 @@ public struct GeneticConfiguration {
     )
 }
 
-public struct GeneticAlgorithm {
+public struct GeneticAlgorithm: Sendable {
     let configuration: GeneticConfiguration
     
     func evolve(
@@ -474,8 +518,7 @@ public struct IndexParameters {
 // MARK: - Quantum-Inspired Optimization
 
 /// Quantum-inspired optimization strategy (experimental)
-@available(macOS 10.15, iOS 13.0, *)
-public struct QuantumInspiredOptimizationStrategy: OptimizationStrategyProtocol {
+public struct QuantumInspiredOptimizationStrategy: OptimizationStrategyProtocol, Sendable {
     public typealias ModelType = QuantumOptimizer
     public typealias MetricsType = PerformanceMetrics
     
@@ -520,11 +563,11 @@ public struct QuantumInspiredOptimizationStrategy: OptimizationStrategyProtocol 
     }
 }
 
-public struct QuantumOptimizer {
+public struct QuantumOptimizer: Sendable {
     func anneal(landscape: OptimizationLandscape) async throws -> QuantumState {
         QuantumState()
     }
 }
 
-public struct OptimizationLandscape {}
-public struct QuantumState {}
+public struct OptimizationLandscape: Sendable {}
+public struct QuantumState: Sendable {}

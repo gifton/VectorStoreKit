@@ -7,8 +7,7 @@ import Foundation
 // MARK: - Hierarchical Storage Strategies
 
 /// Production-optimized hierarchical storage strategy
-@available(macOS 10.15, iOS 13.0, *)
-public struct HierarchicalProductionStorageStrategy: StorageStrategy {
+public struct HierarchicalProductionStorageStrategy: StorageStrategy, Sendable {
     public typealias Config = HierarchicalStorage.Configuration
     public typealias BackendType = HierarchicalStorage
     
@@ -26,32 +25,28 @@ public struct HierarchicalProductionStorageStrategy: StorageStrategy {
         self.customConfig = configuration
     }
     
+    public func defaultConfiguration() -> Config {
+        return customConfig ?? Config(
+            hotTierMemoryLimit: 256 * 1024 * 1024,      // 256 MB
+            warmTierFileSizeLimit: 1024 * 1024 * 1024,  // 1 GB
+            coldTierCompression: .lz4,
+            encryptionSettings: .aes256,
+            migrationSettings: .automatic,
+            walConfiguration: .default,
+            monitoringSettings: .enabled,
+            baseDirectory: FileManager.default.temporaryDirectory.appendingPathComponent("vectorstore/production")
+        )
+    }
+    
     public func createBackend(configuration: Config) async throws -> HierarchicalStorage {
         let config = customConfig ?? Config(
             hotTierMemoryLimit: 256 * 1024 * 1024,      // 256 MB
             warmTierFileSizeLimit: 1024 * 1024 * 1024,  // 1 GB
             coldTierCompression: .lz4,
-            encryptionSettings: EncryptionSettings(
-                enableEncryption: true,
-                algorithm: .aes256gcm,
-                keyManagement: .automatic
-            ),
-            migrationSettings: MigrationSettings(
-                enableAutoMigration: true,
-                hotToWarmThreshold: 0.7,
-                warmToColdThreshold: 0.01,
-                migrationInterval: 300
-            ),
-            walConfiguration: WALConfiguration(
-                enableWAL: true,
-                syncPolicy: .periodic(interval: 1.0),
-                maxSegmentSize: 16 * 1024 * 1024
-            ),
-            monitoringSettings: MonitoringSettings(
-                enableMetrics: true,
-                metricsInterval: 10.0,
-                detailedLogging: false
-            ),
+            encryptionSettings: .aes256,
+            migrationSettings: .automatic,
+            walConfiguration: .default,
+            monitoringSettings: .enabled,
             baseDirectory: FileManager.default.temporaryDirectory.appendingPathComponent("vectorstore/production")
         )
         
@@ -60,8 +55,7 @@ public struct HierarchicalProductionStorageStrategy: StorageStrategy {
 }
 
 /// Research-optimized hierarchical storage strategy with comprehensive logging
-@available(macOS 10.15, iOS 13.0, *)
-public struct HierarchicalResearchStorageStrategy: StorageStrategy {
+public struct HierarchicalResearchStorageStrategy: StorageStrategy, Sendable {
     public typealias Config = HierarchicalStorage.Configuration
     public typealias BackendType = HierarchicalStorage
     
@@ -79,32 +73,32 @@ public struct HierarchicalResearchStorageStrategy: StorageStrategy {
         self.customConfig = configuration
     }
     
+    public init(customConfig: HierarchicalStorage.Configuration?) {
+        self.customConfig = customConfig
+    }
+    
+    public func defaultConfiguration() -> Config {
+        return customConfig ?? Config(
+            hotTierMemoryLimit: 512 * 1024 * 1024,      // 512 MB
+            warmTierFileSizeLimit: 2048 * 1024 * 1024,  // 2 GB
+            coldTierCompression: .zstd,
+            encryptionSettings: .chacha20,
+            migrationSettings: .intelligent,
+            walConfiguration: .highPerformance,
+            monitoringSettings: .comprehensive,
+            baseDirectory: FileManager.default.temporaryDirectory.appendingPathComponent("vectorstore/research")
+        )
+    }
+    
     public func createBackend(configuration: Config) async throws -> HierarchicalStorage {
         let config = customConfig ?? Config(
             hotTierMemoryLimit: 512 * 1024 * 1024,      // 512 MB
             warmTierFileSizeLimit: 2048 * 1024 * 1024,  // 2 GB
-            coldTierCompression: .zstd(level: 3),
-            encryptionSettings: EncryptionSettings(
-                enableEncryption: true,
-                algorithm: .chacha20poly1305,
-                keyManagement: .automatic
-            ),
-            migrationSettings: MigrationSettings(
-                enableAutoMigration: true,
-                hotToWarmThreshold: 0.5,
-                warmToColdThreshold: 0.05,
-                migrationInterval: 60 // More frequent for research
-            ),
-            walConfiguration: WALConfiguration(
-                enableWAL: true,
-                syncPolicy: .immediate,
-                maxSegmentSize: 32 * 1024 * 1024
-            ),
-            monitoringSettings: MonitoringSettings(
-                enableMetrics: true,
-                metricsInterval: 1.0, // Frequent monitoring
-                detailedLogging: true // Full logging for research
-            ),
+            coldTierCompression: .zstd,
+            encryptionSettings: .chacha20,
+            migrationSettings: .intelligent,
+            walConfiguration: .highPerformance,
+            monitoringSettings: .comprehensive,
             baseDirectory: FileManager.default.temporaryDirectory.appendingPathComponent("vectorstore/research")
         )
         
@@ -115,8 +109,7 @@ public struct HierarchicalResearchStorageStrategy: StorageStrategy {
 // MARK: - In-Memory Storage Strategy
 
 /// High-performance in-memory storage strategy
-@available(macOS 10.15, iOS 13.0, *)
-public struct InMemoryPerformanceStorageStrategy: StorageStrategy {
+public struct InMemoryPerformanceStorageStrategy: StorageStrategy, Sendable {
     public typealias Config = InMemoryStorageConfiguration
     public typealias BackendType = InMemoryStorage
     
@@ -134,6 +127,10 @@ public struct InMemoryPerformanceStorageStrategy: StorageStrategy {
         self.customConfig = configuration
     }
     
+    public func defaultConfiguration() -> Config {
+        return customConfig ?? InMemoryStorageConfiguration()
+    }
+    
     public func createBackend(configuration: Config) async throws -> InMemoryStorage {
         let config = customConfig ?? configuration
         return try await InMemoryStorage(configuration: config)
@@ -141,7 +138,7 @@ public struct InMemoryPerformanceStorageStrategy: StorageStrategy {
 }
 
 /// In-memory storage configuration
-public struct InMemoryStorageConfiguration {
+public struct InMemoryStorageConfiguration: Sendable, StorageConfiguration, Codable {
     public let maxMemory: Int
     public let evictionPolicy: EvictionPolicy
     public let concurrencyLimit: Int
@@ -155,20 +152,49 @@ public struct InMemoryStorageConfiguration {
         self.evictionPolicy = evictionPolicy
         self.concurrencyLimit = concurrencyLimit
     }
+    
+    // StorageConfiguration protocol requirements
+    public func validate() throws {
+        guard maxMemory > 0 else {
+            throw ValidationError.invalidConfiguration("Max memory must be positive")
+        }
+        guard concurrencyLimit > 0 else {
+            throw ValidationError.invalidConfiguration("Concurrency limit must be positive")
+        }
+    }
+    
+    public func storageOverhead() -> Float {
+        // Minimal overhead for in-memory storage
+        return 0.05 // 5%
+    }
+    
+    public func compressionCapabilities() -> CompressionCapabilities {
+        return CompressionCapabilities(
+            algorithms: [.none],
+            maxRatio: 1.0,
+            lossless: true
+        )
+    }
 }
 
-public enum EvictionPolicy {
-    case lru
-    case lfu
-    case fifo
-    case none
+// EvictionPolicy is defined in Core/Protocols.swift
+
+// Add validation error type
+public enum ValidationError: Error, LocalizedError {
+    case invalidConfiguration(String)
+    
+    public var errorDescription: String? {
+        switch self {
+        case .invalidConfiguration(let message):
+            return "Invalid configuration: \(message)"
+        }
+    }
 }
 
 // MARK: - Distributed Storage Strategy
 
 /// Distributed storage strategy for scale-out deployments
-@available(macOS 10.15, iOS 13.0, *)
-public struct DistributedStorageStrategy: StorageStrategy {
+public struct DistributedStorageStrategy: StorageStrategy, Sendable {
     public typealias Config = DistributedStorageConfiguration
     public typealias BackendType = DistributedStorage
     
@@ -186,6 +212,12 @@ public struct DistributedStorageStrategy: StorageStrategy {
         self.customConfig = configuration
     }
     
+    public func defaultConfiguration() -> Config {
+        return customConfig ?? DistributedStorageConfiguration(
+            nodes: [StorageNode(id: "node1", endpoint: URL(string: "http://localhost:8080")!, capacity: 1024 * 1024 * 1024)]
+        )
+    }
+    
     public func createBackend(configuration: Config) async throws -> DistributedStorage {
         let config = customConfig ?? configuration
         return try await DistributedStorage(configuration: config)
@@ -193,7 +225,7 @@ public struct DistributedStorageStrategy: StorageStrategy {
 }
 
 /// Distributed storage configuration
-public struct DistributedStorageConfiguration {
+public struct DistributedStorageConfiguration: Sendable, StorageConfiguration, Codable {
     public let nodes: [StorageNode]
     public let replicationFactor: Int
     public let consistencyLevel: ConsistencyLevel
@@ -202,7 +234,7 @@ public struct DistributedStorageConfiguration {
     public init(
         nodes: [StorageNode],
         replicationFactor: Int = 3,
-        consistencyLevel: ConsistencyLevel = .quorum,
+        consistencyLevel: ConsistencyLevel = .strong,
         partitionStrategy: PartitionStrategy = .consistent
     ) {
         self.nodes = nodes
@@ -210,9 +242,32 @@ public struct DistributedStorageConfiguration {
         self.consistencyLevel = consistencyLevel
         self.partitionStrategy = partitionStrategy
     }
+    
+    // StorageConfiguration protocol requirements
+    public func validate() throws {
+        guard !nodes.isEmpty else {
+            throw ValidationError.invalidConfiguration("At least one node is required")
+        }
+        guard replicationFactor > 0 && replicationFactor <= nodes.count else {
+            throw ValidationError.invalidConfiguration("Replication factor must be between 1 and node count")
+        }
+    }
+    
+    public func storageOverhead() -> Float {
+        // Overhead includes replication
+        return Float(replicationFactor - 1) + 0.2 // Replication overhead + 20% metadata
+    }
+    
+    public func compressionCapabilities() -> CompressionCapabilities {
+        return CompressionCapabilities(
+            algorithms: [.none, .lz4, .zstd],
+            maxRatio: 5.0,
+            lossless: true
+        )
+    }
 }
 
-public struct StorageNode {
+public struct StorageNode: Sendable, Codable {
     public let id: String
     public let endpoint: URL
     public let capacity: Int
@@ -226,26 +281,36 @@ public struct StorageNode {
     }
 }
 
-public enum ConsistencyLevel {
-    case one
-    case quorum
-    case all
-    case localQuorum
-}
+// ConsistencyLevel is defined in Core/SearchTypes.swift
+// Using the definition: case eventual, strong, strict
 
-public enum PartitionStrategy {
-    case consistent
-    case range
-    case hash
+public enum PartitionStrategy: String, Sendable, Codable {
+    case consistent = "consistent"
+    case range = "range"
+    case hash = "hash"
 }
 
 // MARK: - Placeholder Storage Implementations
 
+/// In-memory storage statistics
+public struct InMemoryStorageStatistics: StorageStatistics, Codable, Sendable {
+    public let totalSize: Int
+    public let compressionRatio: Float
+    public let averageLatency: TimeInterval
+    public let healthMetrics: StorageHealthMetrics
+    
+    public init(totalSize: Int, compressionRatio: Float, averageLatency: TimeInterval, healthMetrics: StorageHealthMetrics) {
+        self.totalSize = totalSize
+        self.compressionRatio = compressionRatio
+        self.averageLatency = averageLatency
+        self.healthMetrics = healthMetrics
+    }
+}
+
 /// Placeholder in-memory storage implementation
-@available(macOS 10.15, iOS 13.0, *)
 public actor InMemoryStorage: StorageBackend {
     public typealias Configuration = InMemoryStorageConfiguration
-    public typealias Statistics = StorageHealthMetrics
+    public typealias Statistics = InMemoryStorageStatistics
     
     private let config: Configuration
     private var storage: [String: Data] = [:]
@@ -287,7 +352,13 @@ public actor InMemoryStorage: StorageBackend {
     public func compact() async throws {}
     
     public func statistics() async -> Statistics {
-        StorageHealthMetrics(errorRate: 0, latencyP99: 0.0001, throughput: 1_000_000, fragmentation: 0)
+        let healthMetrics = StorageHealthMetrics(errorRate: 0, latencyP99: 0.0001, throughput: 1_000_000, fragmentation: 0)
+        return InMemoryStorageStatistics(
+            totalSize: size,
+            compressionRatio: 1.0,
+            averageLatency: 0.00001,
+            healthMetrics: healthMetrics
+        )
     }
     
     public func validateIntegrity() async throws -> StorageIntegrityReport {
@@ -321,11 +392,25 @@ public actor InMemoryStorage: StorageBackend {
     }
 }
 
+/// Distributed storage statistics
+public struct DistributedStorageStatistics: StorageStatistics, Codable, Sendable {
+    public let totalSize: Int
+    public let compressionRatio: Float
+    public let averageLatency: TimeInterval
+    public let healthMetrics: StorageHealthMetrics
+    
+    public init(totalSize: Int, compressionRatio: Float, averageLatency: TimeInterval, healthMetrics: StorageHealthMetrics) {
+        self.totalSize = totalSize
+        self.compressionRatio = compressionRatio
+        self.averageLatency = averageLatency
+        self.healthMetrics = healthMetrics
+    }
+}
+
 /// Placeholder distributed storage implementation
-@available(macOS 10.15, iOS 13.0, *)
 public actor DistributedStorage: StorageBackend {
     public typealias Configuration = DistributedStorageConfiguration
-    public typealias Statistics = StorageHealthMetrics
+    public typealias Statistics = DistributedStorageStatistics
     
     private let config: Configuration
     
@@ -347,7 +432,13 @@ public actor DistributedStorage: StorageBackend {
     }
     public func compact() async throws {}
     public func statistics() async -> Statistics {
-        StorageHealthMetrics(errorRate: 0, latencyP99: 0.001, throughput: 100_000, fragmentation: 0.1)
+        let healthMetrics = StorageHealthMetrics(errorRate: 0, latencyP99: 0.001, throughput: 100_000, fragmentation: 0.1)
+        return DistributedStorageStatistics(
+            totalSize: size,
+            compressionRatio: 2.0,
+            averageLatency: 0.001,
+            healthMetrics: healthMetrics
+        )
     }
     public func validateIntegrity() async throws -> StorageIntegrityReport {
         StorageIntegrityReport(isHealthy: true, issues: [], recommendations: [], lastCheck: Date())

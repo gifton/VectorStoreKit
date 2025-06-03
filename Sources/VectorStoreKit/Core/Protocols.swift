@@ -5,11 +5,68 @@
 import Foundation
 import simd
 
+// MARK: - Strategy Protocols
+
+/// Protocol for compute accelerator strategies
+public protocol ComputeAccelerator: Sendable {
+    associatedtype DeviceType: Sendable
+    associatedtype CapabilitiesType: Sendable
+    
+    var identifier: String { get }
+    var requirements: HardwareRequirements { get }
+    
+    func initialize() async throws -> DeviceType
+    func capabilities() -> CapabilitiesType
+}
+
+/// Protocol for indexing strategies
+public protocol IndexingStrategy: Sendable {
+    associatedtype Config: IndexConfiguration
+    associatedtype IndexType: VectorIndex
+    
+    var identifier: String { get }
+    var characteristics: IndexCharacteristics { get }
+    
+    func createIndex() async throws -> IndexType
+    
+    func createIndex<Vector: SIMD, Metadata: Codable & Sendable>(
+        configuration: Config,
+        vectorType: Vector.Type,
+        metadataType: Metadata.Type
+    ) async throws -> IndexType where Vector.Scalar: BinaryFloatingPoint
+}
+
+/// Protocol for storage strategies
+public protocol StorageStrategy: Sendable {
+    associatedtype Config: StorageConfiguration
+    associatedtype BackendType: StorageBackend
+    
+    var identifier: String { get }
+    var characteristics: StorageCharacteristics { get }
+    
+    func defaultConfiguration() -> Config
+    func createBackend(configuration: Config) async throws -> BackendType
+}
+
+/// Protocol for optimization strategies
+public protocol OptimizationStrategyProtocol: Sendable {
+    associatedtype ModelType: Sendable
+    associatedtype MetricsType: Sendable
+    
+    var identifier: String { get }
+    var characteristics: OptimizationCharacteristics { get }
+    
+    func optimize<Index: VectorIndex>(
+        index: Index,
+        metrics: MetricsType
+    ) async throws
+}
+
 // MARK: - Core Index Protocol
 
 /// Advanced vector index protocol with research capabilities
-@available(macOS 10.15, iOS 13.0, *)
-public protocol VectorIndex: Actor {
+/// Using Swift 5.10's primary associated types for better type inference
+public protocol VectorIndex<Vector, Metadata>: Actor {
     
     // MARK: - Associated Types
     
@@ -117,8 +174,8 @@ public protocol VectorIndex: Actor {
 // MARK: - Storage Backend Protocol
 
 /// Advanced storage backend with research capabilities
-@available(macOS 10.15, iOS 13.0, *)
-public protocol StorageBackend: Actor {
+/// Using Swift 5.10's primary associated types
+public protocol StorageBackend<Configuration, Statistics>: Actor {
     
     // MARK: - Associated Types
     
@@ -199,8 +256,8 @@ public protocol StorageBackend: Actor {
 // MARK: - Cache Protocol
 
 /// Advanced caching with ML-driven eviction policies
-@available(macOS 10.15, iOS 13.0, *)
-public protocol VectorCache: Actor {
+/// Using Swift 5.10's primary associated types
+public protocol VectorCache<Vector, Configuration, Statistics>: Actor {
     
     // MARK: - Associated Types
     
@@ -409,16 +466,18 @@ public enum DurabilityLevel: Sendable {
     case eventual      // Eventually consistent
     case standard      // Standard ACID properties
     case strict        // Strict consistency
+    case extreme       // Maximum durability with multi-region replication
 }
 
 /// Optimization strategies
-public enum OptimizationStrategy: Sendable {
+public enum OptimizationStrategy: Sendable, Equatable, Hashable {
     case none
     case light
     case aggressive
     case learned(model: String)
     case adaptive
     case intelligent
+    case rebalance
 }
 
 /// Export formats for research and backup
@@ -485,28 +544,36 @@ public struct LearnedFilter: Sendable {
 }
 
 /// Compression capabilities
-public struct CompressionCapabilities: Sendable {
+public struct CompressionCapabilities: Sendable, Codable {
     public let algorithms: [CompressionAlgorithm]
     public let maxRatio: Float
     public let lossless: Bool
+    
+    public init(algorithms: [CompressionAlgorithm], maxRatio: Float, lossless: Bool) {
+        self.algorithms = algorithms
+        self.maxRatio = maxRatio
+        self.lossless = lossless
+    }
 }
 
-public enum CompressionAlgorithm: String, Sendable, CaseIterable {
+public enum CompressionAlgorithm: String, Sendable, CaseIterable, Codable {
     case none = "none"
     case lz4 = "lz4"
     case zstd = "zstd"
     case brotli = "brotli"
     case quantization = "quantization"
     case learned = "learned"
+    case adaptive = "adaptive"
 }
 
 /// Eviction policies for caching
-public enum EvictionPolicy: Sendable {
-    case lru           // Least Recently Used
-    case lfu           // Least Frequently Used
-    case arc           // Adaptive Replacement Cache
-    case learned       // ML-based eviction
-    case hybrid        // Combination approach
+public enum EvictionPolicy: String, Sendable, Codable {
+    case lru = "lru"           // Least Recently Used
+    case lfu = "lfu"           // Least Frequently Used
+    case fifo = "fifo"         // First In First Out
+    case arc = "arc"           // Adaptive Replacement Cache
+    case learned = "learned"   // ML-based eviction
+    case hybrid = "hybrid"     // Combination approach
 }
 
 /// Quality metrics for indexes
@@ -668,6 +735,14 @@ public struct LatencyProfile: Sendable {
     public let p95: TimeInterval
     public let p99: TimeInterval
     public let max: TimeInterval
+    
+    public init(p50: TimeInterval, p90: TimeInterval, p95: TimeInterval, p99: TimeInterval, max: TimeInterval) {
+        self.p50 = p50
+        self.p90 = p90
+        self.p95 = p95
+        self.p99 = p99
+        self.max = max
+    }
 }
 
 public struct MemoryProfile: Sendable {
@@ -713,4 +788,206 @@ public enum RecommendationType: String, Sendable {
     case prefetching = "prefetching"
     case partitioning = "partitioning"
     case indexOptimization = "index_optimization"
+}
+
+// MARK: - Strategy Supporting Types
+
+/// Hardware requirements for compute accelerators
+public struct HardwareRequirements: Sendable {
+    public let minimumMemory: Int
+    public let requiredFeatures: Set<HardwareFeature>
+    public let optionalFeatures: Set<HardwareFeature>
+    
+    public init(
+        minimumMemory: Int,
+        requiredFeatures: Set<HardwareFeature>,
+        optionalFeatures: Set<HardwareFeature> = []
+    ) {
+        self.minimumMemory = minimumMemory
+        self.requiredFeatures = requiredFeatures
+        self.optionalFeatures = optionalFeatures
+    }
+}
+
+/// Hardware features
+public enum HardwareFeature: String, Sendable {
+    case metal = "metal"
+    case metalPerformanceShaders = "metalPerformanceShaders"
+    case neuralEngine = "neuralEngine"
+    case accelerateMatrix = "accelerateMatrix"
+}
+
+/// Index characteristics
+public struct IndexCharacteristics: Sendable {
+    public let approximation: ApproximationLevel
+    public let dynamism: DynamismLevel
+    public let scalability: ScalabilityLevel
+    public let parallelism: ParallelismLevel
+    
+    public init(
+        approximation: ApproximationLevel,
+        dynamism: DynamismLevel,
+        scalability: ScalabilityLevel,
+        parallelism: ParallelismLevel
+    ) {
+        self.approximation = approximation
+        self.dynamism = dynamism
+        self.scalability = scalability
+        self.parallelism = parallelism
+    }
+}
+
+public enum ApproximationLevel: Sendable {
+    case exact
+    case approximate(quality: Float)
+    case adaptive
+}
+
+public enum DynamismLevel: Sendable {
+    case `static`
+    case semiDynamic
+    case fullyDynamic
+}
+
+public enum ScalabilityLevel: String, Sendable {
+    case poor = "poor"
+    case moderate = "moderate"
+    case medium = "medium"  // alias for moderate
+    case good = "good"
+    case excellent = "excellent"
+}
+
+public enum ParallelismLevel: Sendable {
+    case none
+    case limited
+    case full
+}
+
+/// Storage characteristics
+public struct StorageCharacteristics: Sendable {
+    public let durability: DurabilityLevel
+    public let consistency: ConsistencyLevel
+    public let scalability: ScalabilityLevel
+    public let compression: CompressionLevel
+    
+    public init(
+        durability: DurabilityLevel,
+        consistency: ConsistencyLevel,
+        scalability: ScalabilityLevel,
+        compression: CompressionLevel
+    ) {
+        self.durability = durability
+        self.consistency = consistency
+        self.scalability = scalability
+        self.compression = compression
+    }
+}
+
+/// Consistency level for storage operations
+public enum ConsistencyLevel: String, Sendable, Codable {
+    case eventual = "eventual"
+    case strong = "strong"
+    case strict = "strict"        // Alias for strong
+    case linearizable = "linearizable"
+    case causal = "causal"
+}
+
+/// Compression level for storage
+public enum CompressionLevel: String, Sendable, Codable {
+    case none = "none"
+    case low = "low"
+    case light = "light"  // alias for low
+    case medium = "medium"
+    case high = "high"
+    case aggressive = "aggressive"  // alias for high
+    case maximum = "maximum"  // highest possible compression
+    case adaptive = "adaptive"
+}
+
+/// Optimization characteristics
+public struct OptimizationCharacteristics: Sendable {
+    public let frequency: OptimizationFrequency
+    public let scope: OptimizationScope
+    public let adaptability: AdaptabilityLevel
+    public let overhead: OverheadLevel
+    
+    public init(
+        frequency: OptimizationFrequency,
+        scope: OptimizationScope,
+        adaptability: AdaptabilityLevel,
+        overhead: OverheadLevel
+    ) {
+        self.frequency = frequency
+        self.scope = scope
+        self.adaptability = adaptability
+        self.overhead = overhead
+    }
+}
+
+public enum OptimizationFrequency: Sendable {
+    case continuous
+    case periodic(TimeInterval)
+    case onDemand
+    case adaptive
+}
+
+public enum OptimizationScope: Sendable {
+    case local
+    case global
+    case hybrid
+}
+
+public enum AdaptabilityLevel: Sendable {
+    case low
+    case moderate
+    case high
+    case intelligent
+}
+
+public enum OverheadLevel: Sendable {
+    case low
+    case medium
+    case moderate  // Alias for medium
+    case high
+}
+
+/// Computational complexity levels
+public enum ComputationalComplexity: String, Sendable {
+    case constant = "O(1)"
+    case logarithmic = "O(log n)"
+    case linear = "O(n)"
+    case linearithmic = "O(n log n)"
+    case quadratic = "O(n²)"
+    case cubic = "O(n³)"
+    case exponential = "O(2^n)"
+    case variable = "variable"
+}
+
+/// Optimization recommendation
+public struct OptimizationRecommendation: Sendable {
+    public let type: OptimizationType
+    public let risk: RiskLevel
+    public let expectedImprovement: Float
+    public let description: String
+    
+    public init(type: OptimizationType, risk: RiskLevel, expectedImprovement: Float, description: String) {
+        self.type = type
+        self.risk = risk
+        self.expectedImprovement = expectedImprovement
+        self.description = description
+    }
+}
+
+public enum OptimizationType: Sendable {
+    case compact
+    case rebalance
+    case adjustParameters([String: String])  // Changed from Any to String for Sendable compliance
+    case rebuild
+}
+
+public enum RiskLevel: Sendable {
+    case low
+    case medium
+    case high
+    case critical
 }

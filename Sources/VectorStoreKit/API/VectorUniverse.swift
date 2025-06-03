@@ -1,122 +1,59 @@
-// VectorStoreKit: VectorUniverse Type System
+// VectorStoreKit: Vector Universe Builder
 //
-// A sophisticated type-safe composable API for building vector storage systems
-// with compile-time guarantees and research-grade flexibility
+// Fluent API for building sophisticated vector storage systems
 
 import Foundation
 import simd
-import Metal
 
-// MARK: - Core Strategy Protocols
+// MARK: - Vector Universe Builder
 
-/// Protocol for indexing strategies with proper associated types
-public protocol IndexingStrategy {
-    associatedtype Config
-    associatedtype IndexType: VectorIndex
-    
-    var identifier: String { get }
-    var characteristics: IndexCharacteristics { get }
-    
-    func createIndex<Vector: SIMD, Metadata: Codable & Sendable>(
-        configuration: Config,
-        vectorType: Vector.Type,
-        metadataType: Metadata.Type
-    ) async throws -> IndexType where Vector.Scalar: BinaryFloatingPoint
-}
-
-/// Protocol for storage strategies
-public protocol StorageStrategy {
-    associatedtype Config
-    associatedtype BackendType: StorageBackend
-    
-    var identifier: String { get }
-    var characteristics: StorageCharacteristics { get }
-    
-    func createBackend(configuration: Config) async throws -> BackendType
-}
-
-/// Protocol for compute accelerators
-public protocol ComputeAccelerator {
-    associatedtype DeviceType
-    associatedtype CapabilitiesType
-    
-    var identifier: String { get }
-    var requirements: HardwareRequirements { get }
-    
-    func initialize() async throws -> DeviceType
-    func capabilities() -> CapabilitiesType
-}
-
-/// Protocol for optimization strategies
-public protocol OptimizationStrategyProtocol {
-    associatedtype ModelType
-    associatedtype MetricsType
-    
-    var identifier: String { get }
-    var characteristics: OptimizationCharacteristics { get }
-    
-    func optimize<Index: VectorIndex>(
-        index: Index,
-        metrics: MetricsType
-    ) async throws
-}
-
-// MARK: - VectorUniverse Base
-
-/// The entry point for building type-safe vector storage systems
-@available(macOS 10.15, iOS 13.0, *)
-public struct VectorUniverse<Vector: SIMD, Metadata: Codable & Sendable>
-where Vector.Scalar: BinaryFloatingPoint {
+/// Entry point for building vector stores using a fluent API
+///
+/// VectorUniverse provides a type-safe, composable way to configure
+/// and instantiate vector stores with specific strategies.
+public struct VectorUniverse<Vector: SIMD & Sendable, Metadata: Codable & Sendable> where Vector.Scalar: BinaryFloatingPoint {
     
     private let configuration: UniverseConfiguration
     
-    /// Create a new vector universe with default configuration
-    public init() {
-        self.configuration = UniverseConfiguration()
+    /// Create a new vector universe
+    public init(config: UniverseConfiguration = .init()) {
+        self.configuration = config
     }
     
-    /// Create a universe with custom configuration
-    public init(configuration: UniverseConfiguration) {
-        self.configuration = configuration
-    }
-    
-    /// Configure the indexing strategy
-    public func index<Strategy: IndexingStrategy>(
-        using strategy: Strategy
-    ) -> IndexedUniverse<Vector, Metadata, Strategy> {
+    /// Configure indexing strategy
+    public func indexing<I: IndexingStrategy>(
+        _ strategy: I
+    ) -> IndexedUniverse<Vector, Metadata, I> 
+    where I.IndexType.Vector == Vector, I.IndexType.Metadata == Metadata {
         IndexedUniverse(
             configuration: configuration,
             indexingStrategy: strategy
-        )
-    }
-    
-    /// Configure multiple indexes for research comparison
-    public func multiIndex<S: Sequence>(
-        using strategies: S
-    ) -> MultiIndexedUniverse<Vector, Metadata, S>
-    where S.Element: IndexingStrategy {
-        MultiIndexedUniverse(
-            configuration: configuration,
-            indexingStrategies: strategies
         )
     }
 }
 
 // MARK: - Indexed Universe
 
-/// A vector universe with indexing strategy configured
-@available(macOS 10.15, iOS 13.0, *)
-public struct IndexedUniverse<Vector: SIMD, Metadata: Codable & Sendable, IndexStrategy: IndexingStrategy>
-where Vector.Scalar: BinaryFloatingPoint {
+/// A vector universe with indexing configured
+public struct IndexedUniverse<
+    Vector: SIMD & Sendable,
+    Metadata: Codable & Sendable,
+    IndexStrategy: IndexingStrategy
+>
+where 
+    Vector.Scalar: BinaryFloatingPoint,
+    IndexStrategy.IndexType.Vector == Vector,
+    IndexStrategy.IndexType.Metadata == Metadata 
+{
     
     let configuration: UniverseConfiguration
     let indexingStrategy: IndexStrategy
     
     /// Configure storage strategy
-    public func store<Storage: StorageStrategy>(
-        using strategy: Storage
-    ) -> StoredUniverse<Vector, Metadata, IndexStrategy, Storage> {
-        StoredUniverse(
+    public func storage<S: StorageStrategy>(
+        _ strategy: S
+    ) -> StorageConfiguredUniverse<Vector, Metadata, IndexStrategy, S> {
+        StorageConfiguredUniverse(
             configuration: configuration,
             indexingStrategy: indexingStrategy,
             storageStrategy: strategy
@@ -124,425 +61,226 @@ where Vector.Scalar: BinaryFloatingPoint {
     }
 }
 
-// MARK: - Multi-Indexed Universe
-
-/// A vector universe with multiple indexing strategies for research
-@available(macOS 10.15, iOS 13.0, *)
-public struct MultiIndexedUniverse<Vector: SIMD, Metadata: Codable & Sendable, IndexStrategies: Sequence>
-where Vector.Scalar: BinaryFloatingPoint, IndexStrategies.Element: IndexingStrategy {
-    
-    let configuration: UniverseConfiguration
-    let indexingStrategies: IndexStrategies
-    
-    /// Configure storage for multi-index research
-    public func store<Storage: StorageStrategy>(
-        using strategy: Storage
-    ) -> MultiStoredUniverse<Vector, Metadata, IndexStrategies, Storage> {
-        MultiStoredUniverse(
-            configuration: configuration,
-            indexingStrategies: indexingStrategies,
-            storageStrategy: strategy
-        )
-    }
-}
-
-// MARK: - Stored Universe
+// MARK: - Storage Configured Universe
 
 /// A vector universe with indexing and storage configured
-@available(macOS 10.15, iOS 13.0, *)
-public struct StoredUniverse<Vector: SIMD, Metadata: Codable & Sendable, IndexStrategy: IndexingStrategy, Storage: StorageStrategy>
-where Vector.Scalar: BinaryFloatingPoint {
+public struct StorageConfiguredUniverse<
+    Vector: SIMD & Sendable,
+    Metadata: Codable & Sendable,
+    IndexStrategy: IndexingStrategy,
+    Storage: StorageStrategy
+>
+where 
+    Vector.Scalar: BinaryFloatingPoint,
+    IndexStrategy.IndexType.Vector == Vector,
+    IndexStrategy.IndexType.Metadata == Metadata 
+{
     
     let configuration: UniverseConfiguration
     let indexingStrategy: IndexStrategy
     let storageStrategy: Storage
     
-    /// Configure hardware acceleration
-    public func accelerate<Accel: ComputeAccelerator>(
-        with accelerator: Accel
-    ) -> AcceleratedUniverse<Vector, Metadata, IndexStrategy, Storage, Accel> {
-        AcceleratedUniverse(
+    /// Configure caching strategy
+    public func caching<C: CachingStrategy>(
+        _ strategy: C
+    ) -> FullyConfiguredUniverse<Vector, Metadata, IndexStrategy, Storage, C>
+    where C.CacheType.Vector == Vector {
+        FullyConfiguredUniverse(
             configuration: configuration,
             indexingStrategy: indexingStrategy,
             storageStrategy: storageStrategy,
-            accelerator: accelerator
+            cachingStrategy: strategy
         )
     }
     
-    /// Skip acceleration and proceed to optimization
-    public func optimize<Opt: OptimizationStrategyProtocol>(
-        with strategy: Opt
-    ) -> OptimizedUniverse<Vector, Metadata, IndexStrategy, Storage, NoAcceleration, Opt> {
-        OptimizedUniverse(
+    /// Use default caching (no cache)
+    public func withoutCache() -> FullyConfiguredUniverse<Vector, Metadata, IndexStrategy, Storage, NoOpCachingStrategy<Vector>> {
+        FullyConfiguredUniverse(
             configuration: configuration,
             indexingStrategy: indexingStrategy,
             storageStrategy: storageStrategy,
-            accelerator: NoAcceleration(),
-            optimizationStrategy: strategy
+            cachingStrategy: NoOpCachingStrategy<Vector>()
         )
-    }
-    
-    /// Materialize without acceleration or optimization
-    @available(macOS 10.15, iOS 13.0, *)
-    public func materialize() async throws -> VectorStore<Vector, Metadata> {
-        let finalConfig = configuration
-            .with(indexing: indexingStrategy)
-            .with(storage: storageStrategy)
-        
-        return try await VectorStore(configuration: finalConfig)
     }
 }
 
-// MARK: - Multi-Stored Universe
-
-/// A vector universe with multiple indexes and storage configured
-@available(macOS 10.15, iOS 13.0, *)
-public struct MultiStoredUniverse<Vector: SIMD, Metadata: Codable & Sendable, IndexStrategies: Sequence, Storage: StorageStrategy>
-where Vector.Scalar: BinaryFloatingPoint, IndexStrategies.Element: IndexingStrategy {
-    
-    let configuration: UniverseConfiguration
-    let indexingStrategies: IndexStrategies
-    let storageStrategy: Storage
-    
-    /// Configure acceleration for multi-index research
-    public func accelerate<Accel: ComputeAccelerator>(
-        with accelerator: Accel
-    ) -> MultiAcceleratedUniverse<Vector, Metadata, IndexStrategies, Storage, Accel> {
-        MultiAcceleratedUniverse(
-            configuration: configuration,
-            indexingStrategies: indexingStrategies,
-            storageStrategy: storageStrategy,
-            accelerator: accelerator
-        )
-    }
-    
-    /// Materialize research-grade multi-index store
-    @available(macOS 10.15, iOS 13.0, *)
-    public func materialize() async throws -> ResearchVectorStore<Vector, Metadata> {
-        let finalConfig = configuration
-            .with(multiIndexing: Array(indexingStrategies))
-            .with(storage: storageStrategy)
-        
-        return try await ResearchVectorStore(configuration: finalConfig)
-    }
-}
-
-// MARK: - Accelerated Universe
-
-/// A vector universe with indexing, storage, and acceleration configured
-@available(macOS 10.15, iOS 13.0, *)
-public struct AcceleratedUniverse<Vector: SIMD, Metadata: Codable & Sendable, IndexStrategy: IndexingStrategy, Storage: StorageStrategy, Accel: ComputeAccelerator>
-where Vector.Scalar: BinaryFloatingPoint {
-    
-    let configuration: UniverseConfiguration
-    let indexingStrategy: IndexStrategy
-    let storageStrategy: Storage
-    let accelerator: Accel
-    
-    /// Configure optimization strategy
-    public func optimize<Opt: OptimizationStrategyProtocol>(
-        with strategy: Opt
-    ) -> OptimizedUniverse<Vector, Metadata, IndexStrategy, Storage, Accel, Opt> {
-        OptimizedUniverse(
-            configuration: configuration,
-            indexingStrategy: indexingStrategy,
-            storageStrategy: storageStrategy,
-            accelerator: accelerator,
-            optimizationStrategy: strategy
-        )
-    }
-    
-    /// Materialize without optimization
-    @available(macOS 10.15, iOS 13.0, *)
-    public func materialize() async throws -> VectorStore<Vector, Metadata> {
-        let finalConfig = configuration
-            .with(indexing: indexingStrategy)
-            .with(storage: storageStrategy)
-            .with(acceleration: accelerator)
-        
-        return try await VectorStore(configuration: finalConfig)
-    }
-}
-
-// MARK: - Multi-Accelerated Universe
-
-/// A vector universe with multiple indexes, storage, and acceleration configured
-@available(macOS 10.15, iOS 13.0, *)
-public struct MultiAcceleratedUniverse<Vector: SIMD, Metadata: Codable & Sendable, IndexStrategies: Sequence, Storage: StorageStrategy, Accel: ComputeAccelerator>
-where Vector.Scalar: BinaryFloatingPoint, IndexStrategies.Element: IndexingStrategy {
-    
-    let configuration: UniverseConfiguration
-    let indexingStrategies: IndexStrategies
-    let storageStrategy: Storage
-    let accelerator: Accel
-    
-    /// Configure optimization for multi-index research
-    public func optimize<Opt: OptimizationStrategyProtocol>(
-        with strategy: Opt
-    ) -> MultiOptimizedUniverse<Vector, Metadata, IndexStrategies, Storage, Accel, Opt> {
-        MultiOptimizedUniverse(
-            configuration: configuration,
-            indexingStrategies: indexingStrategies,
-            storageStrategy: storageStrategy,
-            accelerator: accelerator,
-            optimizationStrategy: strategy
-        )
-    }
-    
-    /// Materialize accelerated research store
-    @available(macOS 10.15, iOS 13.0, *)
-    public func materialize() async throws -> ResearchVectorStore<Vector, Metadata> {
-        let finalConfig = configuration
-            .with(multiIndexing: Array(indexingStrategies))
-            .with(storage: storageStrategy)
-            .with(acceleration: accelerator)
-        
-        return try await ResearchVectorStore(configuration: finalConfig)
-    }
-}
-
-// MARK: - Optimized Universe
+// MARK: - Fully Configured Universe
 
 /// A fully configured vector universe ready for materialization
-@available(macOS 10.15, iOS 13.0, *)
-public struct OptimizedUniverse<Vector: SIMD, Metadata: Codable & Sendable, IndexStrategy: IndexingStrategy, Storage: StorageStrategy, Accel: ComputeAccelerator, Opt: OptimizationStrategyProtocol>
-where Vector.Scalar: BinaryFloatingPoint {
+public struct FullyConfiguredUniverse<
+    Vector: SIMD & Sendable,
+    Metadata: Codable & Sendable,
+    IndexStrategy: IndexingStrategy,
+    Storage: StorageStrategy,
+    Caching: CachingStrategy
+>
+where 
+    Vector.Scalar: BinaryFloatingPoint,
+    IndexStrategy.IndexType.Vector == Vector,
+    IndexStrategy.IndexType.Metadata == Metadata,
+    Caching.CacheType.Vector == Vector 
+{
     
     let configuration: UniverseConfiguration
     let indexingStrategy: IndexStrategy
     let storageStrategy: Storage
-    let accelerator: Accel
-    let optimizationStrategy: Opt
+    let cachingStrategy: Caching
     
     /// Create the configured vector store
-    @available(macOS 10.15, iOS 13.0, *)
-    public func materialize() async throws -> VectorStore<Vector, Metadata> {
-        let finalConfig = configuration
-            .with(indexing: indexingStrategy)
-            .with(storage: storageStrategy)
-            .with(acceleration: accelerator)
-            .with(optimization: optimizationStrategy)
+    public func materialize() async throws -> VectorStore<
+        Vector,
+        Metadata,
+        IndexStrategy.IndexType,
+        Storage.BackendType,
+        Caching.CacheType
+    > {
+        // Create index
+        let index = try await indexingStrategy.createIndex()
         
-        return try await VectorStore(configuration: finalConfig)
-    }
-    
-    /// Create a research-grade store with additional capabilities
-    @available(macOS 10.15, iOS 13.0, *)
-    public func materializeForResearch() async throws -> ResearchVectorStore<Vector, Metadata> {
-        let finalConfig = configuration
-            .with(indexing: indexingStrategy)
-            .with(storage: storageStrategy)
-            .with(acceleration: accelerator)
-            .with(optimization: optimizationStrategy)
-            .enableResearchMode()
+        // Create storage backend
+        let storage = try await storageStrategy.createBackend(configuration: storageStrategy.defaultConfiguration())
         
-        return try await ResearchVectorStore(configuration: finalConfig)
-    }
-}
-
-// MARK: - Multi-Optimized Universe
-
-/// A fully configured multi-index vector universe for research
-@available(macOS 10.15, iOS 13.0, *)
-public struct MultiOptimizedUniverse<Vector: SIMD, Metadata: Codable & Sendable, IndexStrategies: Sequence, Storage: StorageStrategy, Accel: ComputeAccelerator, Opt: OptimizationStrategyProtocol>
-where Vector.Scalar: BinaryFloatingPoint, IndexStrategies.Element: IndexingStrategy {
-    
-    let configuration: UniverseConfiguration
-    let indexingStrategies: IndexStrategies
-    let storageStrategy: Storage
-    let accelerator: Accel
-    let optimizationStrategy: Opt
-    
-    /// Materialize research store with multiple indexes
-    @available(macOS 10.15, iOS 13.0, *)
-    public func materialize() async throws -> ResearchVectorStore<Vector, Metadata> {
-        let finalConfig = configuration
-            .with(multiIndexing: Array(indexingStrategies))
-            .with(storage: storageStrategy)
-            .with(acceleration: accelerator)
-            .with(optimization: optimizationStrategy)
-            .enableResearchMode()
+        // Create cache
+        let cache = try await cachingStrategy.createCache()
         
-        return try await ResearchVectorStore(configuration: finalConfig)
-    }
-    
-    /// Materialize comparative research store
-    @available(macOS 10.15, iOS 13.0, *)
-    public func materializeForComparison() async throws -> ComparativeVectorStore<Vector, Metadata> {
-        let finalConfig = configuration
-            .with(multiIndexing: Array(indexingStrategies))
-            .with(storage: storageStrategy)
-            .with(acceleration: accelerator)
-            .with(optimization: optimizationStrategy)
-            .enableComparativeMode()
+        // Create store configuration
+        let storeConfig = configuration.buildStoreConfiguration()
         
-        return try await ComparativeVectorStore(configuration: finalConfig)
+        // Create and return the vector store
+        return try await VectorStore(
+            index: index,
+            storage: storage,
+            cache: cache,
+            configuration: storeConfig
+        )
     }
 }
 
-// MARK: - Configuration Implementation
+// MARK: - Strategy Protocols
 
-/// Internal configuration for universe building
-public struct UniverseConfiguration {
-    private var settings: [String: Any] = [:]
+/// Protocol for caching strategies
+public protocol CachingStrategy {
+    associatedtype CacheType: VectorCache
+    associatedtype Config: CacheConfiguration = CacheType.Configuration
+    
+    var configuration: Config? { get }
+    
+    func createCache() async throws -> CacheType
+}
+
+// MARK: - Built-in Caching Strategies
+
+/// No-operation caching strategy
+public struct NoOpCachingStrategy<Vector: SIMD & Sendable>: CachingStrategy where Vector.Scalar: BinaryFloatingPoint {
+    public typealias CacheType = NoOpVectorCache<Vector>
+    
+    public let configuration: NoOpCacheConfiguration? = nil
+    
+    public init() {}
+    
+    public func createCache() async throws -> NoOpVectorCache<Vector> {
+        NoOpVectorCache<Vector>()
+    }
+}
+
+/// LRU caching strategy
+public struct LRUCachingStrategy<Vector: SIMD & Sendable>: CachingStrategy where Vector.Scalar: BinaryFloatingPoint {
+    public typealias CacheType = BasicLRUVectorCache<Vector>
+    
+    public let configuration: LRUCacheConfiguration?
+    
+    public init(maxMemory: Int = 100_000_000) {
+        self.configuration = LRUCacheConfiguration(maxMemory: maxMemory)
+    }
+    
+    public func createCache() async throws -> BasicLRUVectorCache<Vector> {
+        try BasicLRUVectorCache<Vector>(maxMemory: configuration?.maxMemory ?? 100_000_000)
+    }
+}
+
+/// LFU caching strategy
+public struct LFUCachingStrategy<Vector: SIMD & Sendable>: CachingStrategy where Vector.Scalar: BinaryFloatingPoint {
+    public typealias CacheType = BasicLFUVectorCache<Vector>
+    
+    public let configuration: LFUCacheConfiguration?
+    
+    public init(maxMemory: Int = 100_000_000) {
+        self.configuration = LFUCacheConfiguration(maxMemory: maxMemory)
+    }
+    
+    public func createCache() async throws -> BasicLFUVectorCache<Vector> {
+        try BasicLFUVectorCache<Vector>(maxMemory: configuration?.maxMemory ?? 100_000_000)
+    }
+}
+
+// MARK: - Universe Configuration
+
+/// Configuration container for vector universe
+public struct UniverseConfiguration: Sendable {
+    private var settings: [String: any Sendable] = [:]
     
     public init() {
-        // Default research-focused settings
-        settings["researchMode"] = true
-        settings["performanceLogging"] = true
-        settings["integrityChecking"] = true
-        settings["analyticsEnabled"] = true
+        // Default settings
+        settings["enableProfiling"] = true
+        settings["enableAnalytics"] = true
     }
     
-    func with<Strategy: IndexingStrategy>(indexing strategy: Strategy) -> UniverseConfiguration {
-        var newConfig = self
-        newConfig.settings["indexingStrategy"] = strategy
-        return newConfig
+    /// Build store configuration from universe settings
+    func buildStoreConfiguration() -> StoreConfiguration {
+        StoreConfiguration(
+            name: settings["name"] as? String ?? "VectorStore",
+            enableProfiling: settings["enableProfiling"] as? Bool ?? true,
+            enableAnalytics: settings["enableAnalytics"] as? Bool ?? true,
+            integrityCheckInterval: settings["integrityCheckInterval"] as? TimeInterval ?? 3600,
+            optimizationThreshold: settings["optimizationThreshold"] as? Int ?? 100_000
+        )
     }
     
-    func with<Strategies: Sequence>(multiIndexing strategies: Strategies) -> UniverseConfiguration
-    where Strategies.Element: IndexingStrategy {
-        var newConfig = self
-        newConfig.settings["multiIndexingStrategies"] = Array(strategies)
-        return newConfig
+    /// Get a configuration value with a default
+    public func get<T>(_ key: String, default defaultValue: T) -> T {
+        return settings[key] as? T ?? defaultValue
     }
     
-    func with<Strategy: StorageStrategy>(storage strategy: Strategy) -> UniverseConfiguration {
-        var newConfig = self
-        newConfig.settings["storageStrategy"] = strategy
-        return newConfig
-    }
-    
-    func with<Accelerator: ComputeAccelerator>(acceleration accelerator: Accelerator) -> UniverseConfiguration {
-        var newConfig = self
-        newConfig.settings["accelerator"] = accelerator
-        return newConfig
-    }
-    
-    func with<Strategy: OptimizationStrategyProtocol>(optimization strategy: Strategy) -> UniverseConfiguration {
-        var newConfig = self
-        newConfig.settings["optimizationStrategy"] = strategy
-        return newConfig
-    }
-    
-    func enableResearchMode() -> UniverseConfiguration {
-        var newConfig = self
-        newConfig.settings["researchMode"] = true
-        newConfig.settings["detailedMetrics"] = true
-        newConfig.settings["algorithmComparison"] = true
-        return newConfig
-    }
-    
-    func enableComparativeMode() -> UniverseConfiguration {
-        var newConfig = self
-        newConfig.settings["comparativeMode"] = true
-        newConfig.settings["parallelExecution"] = true
-        newConfig.settings["performanceComparison"] = true
-        return newConfig
+    /// Set a configuration value
+    public mutating func set<T: Sendable>(_ key: String, value: T) {
+        settings[key] = value
     }
 }
 
-// MARK: - No Acceleration Placeholder
+// MARK: - Convenience Extensions
 
-/// Placeholder for no hardware acceleration
-public struct NoAcceleration: ComputeAccelerator {
-    public typealias DeviceType = Void
-    public typealias CapabilitiesType = EmptyCapabilities
-    
-    public let identifier = "none"
-    
-    public let requirements = HardwareRequirements(
-        minimumMemory: 0,
-        requiredFeatures: [],
-        optionalFeatures: []
-    )
-    
-    public init() {}
-    
-    public func initialize() async throws -> Void {
-        // No initialization needed
-    }
-    
-    public func capabilities() -> EmptyCapabilities {
-        EmptyCapabilities()
-    }
-}
-
-public struct EmptyCapabilities {
-    public init() {}
-}
-
-// MARK: - Builder Extensions
-
-@available(macOS 10.15, iOS 13.0, *)
 extension VectorUniverse {
-    /// Quick setup for production use with HNSW index
-    public func production() -> ProductionConfiguration {
-        ProductionConfiguration(universe: self)
+    /// Quick setup with HNSW index, hierarchical storage, and LRU cache
+    public static func quickStart(
+        maxConnections: Int = 16,
+        cacheMemory: Int = 100_000_000
+    ) -> FullyConfiguredUniverse<Vector, Metadata, HNSWIndexingStrategy<Vector, Metadata>, HierarchicalResearchStorageStrategy, LRUCachingStrategy<Vector>> {
+        VectorUniverse<Vector, Metadata>()
+            .indexing(HNSWIndexingStrategy<Vector, Metadata>(maxConnections: maxConnections))
+            .storage(HierarchicalResearchStorageStrategy())
+            .caching(LRUCachingStrategy(maxMemory: cacheMemory))
     }
     
-    /// Research configuration with multiple indexes
-    public func research() -> ResearchConfiguration {
-        ResearchConfiguration(universe: self)
-    }
-    
-    /// High-performance configuration
-    public func performance() -> PerformanceConfiguration {
-        PerformanceConfiguration(universe: self)
-    }
-}
-
-/// Type-safe production configuration builder
-@available(macOS 10.15, iOS 13.0, *)
-public struct ProductionConfiguration<Vector: SIMD, Metadata: Codable & Sendable>
-where Vector.Scalar: BinaryFloatingPoint {
-    let universe: VectorUniverse<Vector, Metadata>
-    
-    /// Build with recommended production settings
-    public func build() async throws -> VectorStore<Vector, Metadata> {
-        try await universe
-            .index(using: HNSWProductionIndexingStrategy())
-            .store(using: HierarchicalProductionStorageStrategy())
-            .accelerate(with: MetalProductionAcceleratorStrategy())
-            .optimize(with: MLProductionOptimizationStrategy())
-            .materialize()
-    }
-}
-
-/// Type-safe research configuration builder
-@available(macOS 10.15, iOS 13.0, *)
-public struct ResearchConfiguration<Vector: SIMD, Metadata: Codable & Sendable>
-where Vector.Scalar: BinaryFloatingPoint {
-    let universe: VectorUniverse<Vector, Metadata>
-    
-    /// Build with multiple indexes for comparison
-    public func build() async throws -> ResearchVectorStore<Vector, Metadata> {
-        try await universe
-            .multiIndex(using: [
-                HNSWResearchIndexingStrategy(),
-                IVFIndexingStrategy(),
-                LearnedIndexingStrategy()
-            ])
-            .store(using: HierarchicalResearchStorageStrategy())
-            .accelerate(with: MetalResearchAcceleratorStrategy())
-            .optimize(with: MLResearchOptimizationStrategy())
-            .materialize()
-    }
-}
-
-/// Type-safe performance configuration builder
-@available(macOS 10.15, iOS 13.0, *)
-public struct PerformanceConfiguration<Vector: SIMD, Metadata: Codable & Sendable>
-where Vector.Scalar: BinaryFloatingPoint {
-    let universe: VectorUniverse<Vector, Metadata>
-    
-    /// Build with maximum performance settings
-    public func build() async throws -> VectorStore<Vector, Metadata> {
-        try await universe
-            .index(using: HNSWPerformanceIndexingStrategy())
-            .store(using: InMemoryPerformanceStorageStrategy())
-            .accelerate(with: MetalPerformanceAcceleratorStrategy())
-            .optimize(with: AggressiveOptimizationStrategy())
-            .materialize()
+    /// Research configuration with advanced features
+    public static func research() -> FullyConfiguredUniverse<Vector, Metadata, HNSWIndexingStrategy<Vector, Metadata>, HierarchicalResearchStorageStrategy, LFUCachingStrategy<Vector>> {
+        VectorUniverse<Vector, Metadata>()
+            .indexing(HNSWIndexingStrategy<Vector, Metadata>(
+                maxConnections: 32,
+                efConstruction: 400,
+                useAdaptiveTuning: true
+            ))
+            .storage(HierarchicalResearchStorageStrategy(
+                customConfig: HierarchicalStorage.Configuration(
+                    hotTierMemoryLimit: 1_000_000_000,
+                    warmTierFileSizeLimit: 10_000_000_000,
+                    coldTierCompression: .zstd,
+                    encryptionSettings: .chacha20,
+                    migrationSettings: .intelligent,
+                    walConfiguration: .highPerformance,
+                    monitoringSettings: .comprehensive,
+                    baseDirectory: FileManager.default.temporaryDirectory.appendingPathComponent("vectorstore/research")
+                )
+            ))
+            .caching(LFUCachingStrategy(maxMemory: 500_000_000))
     }
 }

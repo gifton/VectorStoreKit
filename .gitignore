@@ -1,8 +1,30 @@
+# macOS
 .DS_Store
+
+# Swift Package Manager
 /.build
 /Packages
+.swiftpm/
+Package.resolved
+
+# Xcode
 xcuserdata/
 DerivedData/
-.swiftpm/configuration/registries.json
-.swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
+*.xcodeproj
+*.xcworkspace
+
+# Build artifacts
+*.log
+build/
+.build/
+
+# IDE
+.vscode/
+.idea/
+
+# Credentials
 .netrc
+
+# Documentation builds
+docs/_build/
+.jazzy/

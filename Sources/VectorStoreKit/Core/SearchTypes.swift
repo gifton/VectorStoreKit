@@ -105,6 +105,7 @@ public struct SimilarityAnalysis: Codable, Sendable {
 public enum DistanceMetric: String, Codable, Sendable, CaseIterable {
     case euclidean = "euclidean"
     case cosine = "cosine"
+    case dotProduct = "dotProduct"     // Dot product similarity
     case manhattan = "manhattan"
     case chebyshev = "chebyshev"
     case minkowski = "minkowski"
@@ -118,7 +119,7 @@ public enum DistanceMetric: String, Codable, Sendable, CaseIterable {
     /// Computational complexity for this metric
     public var complexity: ComputationalComplexity {
         switch self {
-        case .euclidean, .cosine, .manhattan:
+        case .euclidean, .cosine, .dotProduct, .manhattan:
             return .linear
         case .chebyshev, .hamming, .jaccard:
             return .linear
@@ -136,15 +137,12 @@ public enum DistanceMetric: String, Codable, Sendable, CaseIterable {
         switch self {
         case .euclidean, .manhattan, .chebyshev, .minkowski, .hamming, .mahalanobis, .earth_mover:
             return true
-        case .cosine, .jaccard, .learned, .adaptive:
+        case .cosine, .dotProduct, .jaccard, .learned, .adaptive:
             return false
         }
     }
 }
 
-public enum ComputationalComplexity: Sendable {
-    case constant, linear, quadratic, cubic, exponential, variable
-}
 
 // MARK: - Geometric Properties
 
@@ -399,6 +397,3 @@ public enum ResourceLevel: Sendable {
     case low, medium, high, adaptive, variable
 }
 
-public enum ScalabilityLevel: Sendable {
-    case poor, medium, good, excellent
-}

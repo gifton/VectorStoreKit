@@ -6,11 +6,15 @@ import Foundation
 import Metal
 import CoreML
 
+// MARK: - Metal Type Safety
+
+// Note: Metal types cannot be made Sendable through extensions
+// We'll handle thread safety through the actor model and @unchecked Sendable where needed
+
 // MARK: - Metal Accelerator Strategies
 
 /// Production-optimized Metal accelerator for GPU compute
-@available(macOS 10.15, iOS 13.0, *)
-public struct MetalProductionAcceleratorStrategy: ComputeAccelerator {
+public struct MetalProductionAcceleratorStrategy: ComputeAccelerator, Sendable {
     public typealias DeviceType = MetalComputeDevice
     public typealias CapabilitiesType = MetalCapabilities
     
@@ -87,8 +91,7 @@ public struct MetalProductionAcceleratorStrategy: ComputeAccelerator {
 }
 
 /// Research-optimized Metal accelerator with profiling
-@available(macOS 10.15, iOS 13.0, *)
-public struct MetalResearchAcceleratorStrategy: ComputeAccelerator {
+public struct MetalResearchAcceleratorStrategy: ComputeAccelerator, Sendable {
     public typealias DeviceType = MetalComputeDevice
     public typealias CapabilitiesType = MetalCapabilities
     
@@ -132,8 +135,7 @@ public struct MetalResearchAcceleratorStrategy: ComputeAccelerator {
 }
 
 /// Performance-optimized Metal accelerator
-@available(macOS 10.15, iOS 13.0, *)
-public struct MetalPerformanceAcceleratorStrategy: ComputeAccelerator {
+public struct MetalPerformanceAcceleratorStrategy: ComputeAccelerator, Sendable {
     public typealias DeviceType = MetalComputeDevice
     public typealias CapabilitiesType = MetalCapabilities
     
@@ -185,8 +187,7 @@ public struct MetalPerformanceAcceleratorStrategy: ComputeAccelerator {
 // MARK: - Neural Engine Accelerator
 
 /// Apple Neural Engine accelerator for ML workloads
-@available(macOS 11.0, iOS 14.0, *)
-public struct NeuralEngineAcceleratorStrategy: ComputeAccelerator {
+public struct NeuralEngineAcceleratorStrategy: ComputeAccelerator, Sendable {
     public typealias DeviceType = NeuralEngineDevice
     public typealias CapabilitiesType = NeuralEngineCapabilities
     
@@ -237,14 +238,14 @@ public struct NeuralEngineAcceleratorStrategy: ComputeAccelerator {
 
 // MARK: - Supporting Types
 
-public enum DeviceSelection {
+public enum DeviceSelection: Sendable {
     case automatic
     case discrete
     case integrated
     case specific(name: String)
 }
 
-public struct MetalComputeDevice {
+public struct MetalComputeDevice: @unchecked Sendable {
     public let device: MTLDevice
     public let commandQueue: MTLCommandQueue
     public let configuration: Configuration
@@ -256,7 +257,7 @@ public struct MetalComputeDevice {
     }
 }
 
-public struct MetalCapabilities {
+public struct MetalCapabilities: Sendable {
     public let maxThreadsPerThreadgroup: MTLSize
     public let supportsFloat16: Bool
     public let supportsRaytracing: Bool
@@ -264,7 +265,7 @@ public struct MetalCapabilities {
     public let supportedFeatures: Set<MetalFeature>
 }
 
-public enum MetalFeature {
+public enum MetalFeature: Sendable {
     case basic
     case float16
     case simdGroupMatrix
@@ -276,24 +277,24 @@ public enum MetalFeature {
     case debugging
 }
 
-public struct NeuralEngineDevice {
+public struct NeuralEngineDevice: Sendable {
     public let configuration: Configuration
     
-    public enum Configuration {
+    public enum Configuration: Sendable {
         case `default`
         case highThroughput
         case lowLatency
     }
 }
 
-public struct NeuralEngineCapabilities {
+public struct NeuralEngineCapabilities: Sendable {
     public let supportedOperations: Set<NeuralOperation>
     public let maxModelSize: Int
     public let precision: Set<PrecisionLevel>
     public let throughput: Float // TOPS
 }
 
-public enum NeuralOperation {
+public enum NeuralOperation: Sendable {
     case matmul
     case convolution
     case activation
@@ -302,7 +303,7 @@ public enum NeuralOperation {
     case elementwise
 }
 
-public enum PrecisionLevel {
+public enum PrecisionLevel: Sendable {
     case float32
     case float16
     case int8
@@ -311,7 +312,7 @@ public enum PrecisionLevel {
 
 // MARK: - Accelerator Errors
 
-public enum AcceleratorError: Error {
+public enum AcceleratorError: Error, Sendable {
     case noDevice
     case deviceNotAvailable
     case insufficientMemory
@@ -322,8 +323,7 @@ public enum AcceleratorError: Error {
 // MARK: - AMX Accelerator (Apple Matrix Extension)
 
 /// AMX accelerator for matrix operations on Apple Silicon
-@available(macOS 11.0, iOS 14.0, *)
-public struct AMXAcceleratorStrategy: ComputeAccelerator {
+public struct AMXAcceleratorStrategy: ComputeAccelerator, Sendable {
     public typealias DeviceType = AMXDevice
     public typealias CapabilitiesType = AMXCapabilities
     
@@ -361,15 +361,15 @@ public struct AMXAcceleratorStrategy: ComputeAccelerator {
     }
 }
 
-public struct AMXDevice {}
+public struct AMXDevice: Sendable {}
 
-public struct AMXCapabilities {
+public struct AMXCapabilities: Sendable {
     public let matrixSize: Int
     public let supportedTypes: Set<DataType>
     public let throughput: Float // TFLOPS
 }
 
-public enum DataType {
+public enum DataType: Sendable {
     case float32
     case float16
     case int8

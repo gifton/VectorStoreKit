@@ -37,7 +37,7 @@ import os.log
 /// - Adaptive pruning based on data distribution
 /// - Hardware-aware optimizations for Apple Silicon
 /// - Integration with quantization for memory efficiency
-public actor HNSWIndex<Vector: SIMD, Metadata: Codable & Sendable>: VectorIndex 
+public actor HNSWIndex<Vector: SIMD & Sendable, Metadata: Codable & Sendable>: VectorIndex 
 where Vector.Scalar: BinaryFloatingPoint {
     
     // MARK: - Type Definitions
@@ -192,10 +192,10 @@ where Vector.Scalar: BinaryFloatingPoint {
         let id: NodeID
         
         /// Vector data optimized for SIMD operations
-        let vector: Vector
+        var vector: Vector
         
         /// Associated metadata
-        let metadata: Metadata
+        var metadata: Metadata
         
         /// Hierarchical connections: layer -> set of connected node IDs
         /// Stored as array for cache efficiency, indexed by layer level
@@ -287,7 +287,7 @@ where Vector.Scalar: BinaryFloatingPoint {
     /// Random number generator for layer assignment
     private var rng = SystemRandomNumberGenerator()
     
-    /// Lock-free operation counter for analytics
+    /// Operation counter for analytics (actor-isolated)
     private var operationCounter: UInt64 = 0
     
     /// Construction start time for performance tracking
@@ -307,21 +307,25 @@ where Vector.Scalar: BinaryFloatingPoint {
     
     /// Current memory usage estimate in bytes
     public var memoryUsage: Int {
-        let nodeMemory = nodes.values.reduce(0) { total, node in
-            let vectorSize = MemoryLayout<Vector>.size
-            let metadataSize = 256 // Estimated metadata serialization size
-            let connectionSize = node.totalConnections * MemoryLayout<NodeID>.size
-            return total + vectorSize + metadataSize + connectionSize
+        get async {
+            let nodeMemory = nodes.values.reduce(0) { total, node in
+                let vectorSize = MemoryLayout<Vector>.size
+                let metadataSize = 256 // Estimated metadata serialization size
+                let connectionSize = node.totalConnections * MemoryLayout<NodeID>.size
+                return total + vectorSize + metadataSize + connectionSize
+            }
+            
+            let analyticsMemory = await analytics.memoryUsage
+            return nodeMemory + analyticsMemory
         }
-        
-        let analyticsMemory = analytics.memoryUsage
-        return nodeMemory + analyticsMemory
     }
     
     /// Whether the index has been optimized recently
     public var isOptimized: Bool {
-        guard let lastOpt = analytics.lastOptimization else { return false }
-        return Date().timeIntervalSince(lastOpt) < 3600 // Consider optimized if done within 1 hour
+        get async {
+            guard let lastOpt = await analytics.lastOptimization else { return false }
+            return Date().timeIntervalSince(lastOpt) < 3600 // Consider optimized if done within 1 hour
+        }
     }
     
     // MARK: - Initialization
@@ -364,8 +368,7 @@ where Vector.Scalar: BinaryFloatingPoint {
         let startTime = Date()
         operationCounter += 1
         
-        analytics.recordOperation(.insertion)
-        defer { analytics.recordOperationEnd(.insertion, duration: Date().timeIntervalSince(startTime)) }
+        await analytics.recordOperation(.insertion)
         
         // Check for duplicate IDs
         if nodes[entry.id] != nil {
@@ -408,11 +411,9 @@ where Vector.Scalar: BinaryFloatingPoint {
         // Find neighbors and establish connections
         try await establishConnections(for: &newNode)
         
-        // Update entry point if necessary
+        // Update entry point if necessary (atomic)
         if level > maxLayer {
-            entryPoint = entry.id
-            maxLayer = level
-            logger.info("Updated entry point")
+            await updateEntryPoint(to: entry.id, withLevel: level)
         }
         
         // Store the node
@@ -420,14 +421,12 @@ where Vector.Scalar: BinaryFloatingPoint {
         
         // Check if optimization is needed
         let needsOptimization = shouldOptimize()
-        if needsOptimization && configuration.useAdaptiveTuning {
-            Task.detached {
-                try await self.optimizeIfNeeded()
-            }
-        }
+        // Note: Optimization will be triggered externally or in a controlled manner
+        // to avoid unstructured concurrency
         
         let insertTime = Date().timeIntervalSince(startTime)
-        analytics.recordInsertTime(insertTime)
+        await analytics.recordInsertTime(insertTime)
+        await analytics.recordOperationEnd(.insertion, duration: insertTime)
         
         logger.debug("Successfully inserted node")
         
@@ -474,12 +473,7 @@ where Vector.Scalar: BinaryFloatingPoint {
         let startTime = Date()
         operationCounter += 1
         
-        analytics.recordOperation(.search)
-        defer { 
-            let duration = Date().timeIntervalSince(startTime)
-            analytics.recordOperationEnd(.search, duration: duration)
-            analytics.recordSearchTime(duration)
-        }
+        await analytics.recordOperation(.search)
         
         // Validate inputs
         guard k > 0 else {
@@ -527,6 +521,11 @@ where Vector.Scalar: BinaryFloatingPoint {
         
         logger.debug("Search completed")
         
+        // Record analytics
+        let duration = Date().timeIntervalSince(startTime)
+        await analytics.recordOperationEnd(.search, duration: duration)
+        await analytics.recordSearchTime(duration)
+        
         return results
     }
     
@@ -537,7 +536,7 @@ where Vector.Scalar: BinaryFloatingPoint {
     ///   - metadata: New metadata (optional)
     /// - Returns: Whether the update succeeded
     public func update(id: VectorID, vector: Vector?, metadata: Metadata?) async throws -> Bool {
-        analytics.recordOperation(.update)
+        await analytics.recordOperation(.update)
         
         guard var node = nodes[id], !node.isDeleted else {
             logger.debug("Update failed: node not found")
@@ -583,7 +582,7 @@ where Vector.Scalar: BinaryFloatingPoint {
         nodes[id] = node
         
         let updateTime = Date().timeIntervalSince(startTime)
-        analytics.recordOperationEnd(.update, duration: updateTime)
+        await analytics.recordOperationEnd(.update, duration: updateTime)
         
         logger.debug("Updated node")
         return true
@@ -593,7 +592,7 @@ where Vector.Scalar: BinaryFloatingPoint {
     /// - Parameter id: Vector identifier to delete
     /// - Returns: Whether the deletion succeeded
     public func delete(id: VectorID) async throws -> Bool {
-        analytics.recordOperation(.deletion)
+        await analytics.recordOperation(.deletion)
         
         guard var node = nodes[id], !node.isDeleted else {
             logger.debug("Delete failed: node not found")
@@ -616,7 +615,7 @@ where Vector.Scalar: BinaryFloatingPoint {
         }
         
         let deleteTime = Date().timeIntervalSince(startTime)
-        analytics.recordOperationEnd(.deletion, duration: deleteTime)
+        await analytics.recordOperationEnd(.deletion, duration: deleteTime)
         
         logger.debug("Deleted node")
         return true
@@ -636,7 +635,7 @@ where Vector.Scalar: BinaryFloatingPoint {
     /// - Parameter strategy: Optimization strategy to apply
     public func optimize(strategy: OptimizationStrategy = .intelligent) async throws {
         let startTime = Date()
-        analytics.recordOperation(.optimization)
+        await analytics.recordOperation(.optimization)
         
         logger.info("Starting HNSW optimization")
         
@@ -651,19 +650,23 @@ where Vector.Scalar: BinaryFloatingPoint {
             try await learnedOptimization(model: model)
         case .adaptive:
             try await adaptiveOptimization()
+        case .intelligent:
+            try await adaptiveOptimization() // Use adaptive as fallback
+        case .rebalance:
+            try await lightOptimization() // Use light as fallback
         }
         
-        analytics.lastOptimization = Date()
+        await analytics.setLastOptimization(Date())
         
         let optimizationTime = Date().timeIntervalSince(startTime)
-        analytics.recordOperationEnd(.optimization, duration: optimizationTime)
+        await analytics.recordOperationEnd(.optimization, duration: optimizationTime)
         
         logger.info("Completed HNSW optimization")
     }
     
     /// Compact the index to reclaim space
     public func compact() async throws {
-        let startTime = Date()
+        let _ = Date()
         logger.info("Starting HNSW compaction")
         
         // Remove soft-deleted nodes
@@ -683,24 +686,29 @@ where Vector.Scalar: BinaryFloatingPoint {
         let activeNodes = nodes.values.filter { !$0.isDeleted }
         let avgConnections = activeNodes.isEmpty ? 0 : Float(activeNodes.reduce(0) { $0 + $1.totalConnections }) / Float(activeNodes.count)
         
+        let memUsage = await memoryUsage
+        let avgSearchTime = await analytics.averageSearchTime
+        let estRecall = await analytics.estimatedRecall
+        let estPrecision = await analytics.estimatedPrecision
+        
         return Statistics(
             vectorCount: activeNodes.count,
-            memoryUsage: memoryUsage,
-            averageSearchLatency: analytics.averageSearchTime,
+            memoryUsage: memUsage,
+            averageSearchLatency: avgSearchTime,
             qualityMetrics: IndexQualityMetrics(
-                recall: analytics.estimatedRecall,
-                precision: analytics.estimatedPrecision,
+                recall: estRecall,
+                precision: estPrecision,
                 buildTime: Date().timeIntervalSince(constructionStartTime),
-                memoryEfficiency: Float(activeNodes.count * MemoryLayout<Vector>.size) / Float(memoryUsage),
-                searchLatency: analytics.averageSearchTime
+                memoryEfficiency: Float(activeNodes.count * MemoryLayout<Vector>.size) / Float(memUsage),
+                searchLatency: avgSearchTime
             ),
             layers: maxLayer + 1,
             averageConnections: avgConnections,
             entryPointDistance: entryPoint.map { calculateEntryPointQuality($0) } ?? 0,
             graphConnectivity: calculateGraphConnectivity(),
-            searchPathLength: analytics.averageSearchPathLength,
+            searchPathLength: await analytics.averageSearchPathLength,
             constructionTime: Date().timeIntervalSince(constructionStartTime),
-            lastOptimization: analytics.lastOptimization
+            lastOptimization: await analytics.lastOptimization
         )
     }
     
@@ -711,7 +719,9 @@ where Vector.Scalar: BinaryFloatingPoint {
         
         // Check entry point validity
         if let ep = entryPoint {
-            guard let epNode = nodes[ep], !epNode.isDeleted else {
+            if let epNode = nodes[ep], !epNode.isDeleted {
+                // Entry point is valid
+            } else {
                 errors.append(IntegrityError(
                     type: .corruption,
                     description: "Entry point references deleted or non-existent node",
@@ -823,32 +833,50 @@ where Vector.Scalar: BinaryFloatingPoint {
     
     /// Get performance characteristics for different query types
     public func performanceProfile() async -> PerformanceProfile {
+        let searchP50 = await analytics.searchLatencyP50
+        let searchP90 = await analytics.searchLatencyP90
+        let searchP95 = await analytics.searchLatencyP95
+        let searchP99 = await analytics.searchLatencyP99
+        let maxSearchLatency = await analytics.maxSearchLatency
+        
+        let insertP50 = await analytics.insertLatencyP50
+        let insertP90 = await analytics.insertLatencyP90
+        let insertP95 = await analytics.insertLatencyP95
+        let insertP99 = await analytics.insertLatencyP99
+        let maxInsertLatency = await analytics.maxInsertLatency
+        
+        let peakMem = await analytics.peakMemoryUsage
+        let avgMem = await analytics.averageMemoryUsage
+        let avgQPS = await analytics.averageQPS
+        let avgIPS = await analytics.averageIPS
+        let avgOPS = Float(0.0) // Placeholder
+        
         return PerformanceProfile(
             searchLatency: LatencyProfile(
-                p50: analytics.searchLatencyP50,
-                p90: analytics.searchLatencyP90,
-                p95: analytics.searchLatencyP95,
-                p99: analytics.searchLatencyP99,
-                max: analytics.maxSearchLatency
+                p50: searchP50,
+                p90: searchP90,
+                p95: searchP95,
+                p99: searchP99,
+                max: maxSearchLatency
             ),
             insertLatency: LatencyProfile(
-                p50: analytics.insertLatencyP50,
-                p90: analytics.insertLatencyP90,
-                p95: analytics.insertLatencyP95,
-                p99: analytics.insertLatencyP99,
-                max: analytics.maxInsertLatency
+                p50: insertP50,
+                p90: insertP90,
+                p95: insertP95,
+                p99: insertP99,
+                max: maxInsertLatency
             ),
             memoryUsage: MemoryProfile(
                 baseline: estimateBaselineMemory(),
-                peak: analytics.peakMemoryUsage,
-                average: analytics.averageMemoryUsage,
+                peak: peakMem,
+                average: avgMem,
                 efficiency: calculateMemoryEfficiency()
             ),
             throughput: ThroughputProfile(
-                queriesPerSecond: analytics.averageQPS,
-                insertsPerSecond: analytics.averageIPS,
-                updatesPerSecond: analytics.averageUPS,
-                deletesPerSecond: analytics.averageDPS
+                queriesPerSecond: avgQPS,
+                insertsPerSecond: avgIPS,
+                updatesPerSecond: avgOPS,
+                deletesPerSecond: 0.0  // Not tracked separately
             )
         )
     }
@@ -858,7 +886,7 @@ where Vector.Scalar: BinaryFloatingPoint {
         let activeNodes = nodes.values.filter { !$0.isDeleted }
         
         // Create 2D projection of vectors for visualization
-        let positions = try await projectTo2D(activeNodes.map { $0.vector })
+        let positions = (try? await projectTo2D(activeNodes.map { $0.vector })) ?? []
         
         // Create edges for visualization
         var edges: [(Int, Int, Float)] = []
@@ -880,21 +908,32 @@ where Vector.Scalar: BinaryFloatingPoint {
             layoutAlgorithm: "force_directed"
         )
     }
-}
-
-// MARK: - Private Implementation Methods
-
-private extension HNSWIndex {
+    
+    // MARK: - Private Implementation Methods
+    
+    /// Record node access in a thread-safe manner
+    private func recordNodeAccess(nodeID: NodeID) async {
+        guard var node = nodes[nodeID] else { return }
+        node.recordAccess()
+        nodes[nodeID] = node
+    }
+    
+    /// Atomically update entry point and max layer
+    func updateEntryPoint(to nodeID: NodeID, withLevel level: LayerLevel) async {
+        entryPoint = nodeID
+        maxLayer = level
+        logger.info("Updated entry point to \(nodeID) at level \(level)")
+    }
     
     /// Assign layer level using probabilistic method
-    func assignLayerLevel() -> LayerLevel {
+    private func assignLayerLevel() -> LayerLevel {
         let uniform = Float.random(in: 0..<1, using: &rng)
         let level = Int(floor(-log(uniform) * configuration.levelMultiplier))
         return max(0, level)
     }
     
     /// Establish connections for a new node
-    func establishConnections(for node: inout Node) async throws {
+    private func establishConnections(for node: inout Node) async throws {
         guard let entryPointID = entryPoint else { return }
         
         // Search each layer from top to find neighbors
@@ -946,7 +985,7 @@ private extension HNSWIndex {
     }
     
     /// Greedy search within a single layer
-    func greedySearchLayer(
+    private func greedySearchLayer(
         query: Vector,
         entryPoint: NodeID,
         layer: LayerLevel,
@@ -1010,7 +1049,7 @@ private extension HNSWIndex {
     }
     
     /// Advanced connection selection with diversity pruning
-    func selectConnections(
+    private func selectConnections(
         candidates: [SearchCandidate],
         query: Vector,
         maxConnections: Int,
@@ -1069,7 +1108,7 @@ private extension HNSWIndex {
     }
     
     /// Search layer 0 with dynamic candidate list
-    func searchLayer0(
+    private func searchLayer0(
         query: Vector,
         entryPoint: NodeID,
         ef: Int
@@ -1102,10 +1141,9 @@ private extension HNSWIndex {
                 }
             }
             
-            // Explore neighbors
-            guard var currentNode = nodes[current.nodeID], !currentNode.isDeleted else { continue }
-            currentNode.recordAccess()
-            nodes[current.nodeID] = currentNode
+            // Explore neighbors (with proper isolation)
+            guard let currentNode = nodes[current.nodeID], !currentNode.isDeleted else { continue }
+            await recordNodeAccess(nodeID: current.nodeID)
             
             for neighborID in currentNode.getConnections(at: 0) {
                 if !visited.contains(neighborID) {
@@ -1134,7 +1172,7 @@ private extension HNSWIndex {
     }
     
     /// Apply filters to search candidates
-    func applyFilters(
+    private func applyFilters(
         _ candidates: [SearchCandidate],
         filter: SearchFilter?
     ) async throws -> [SearchCandidate] {
@@ -1156,7 +1194,7 @@ private extension HNSWIndex {
     }
     
     /// Generate comprehensive search results with detailed analysis
-    func generateSearchResults(
+    private func generateSearchResults(
         query: Vector,
         candidates: [SearchCandidate],
         strategy: SearchStrategy,
@@ -1188,7 +1226,11 @@ private extension HNSWIndex {
                     distanceCalculations: 1, // Simplified
                     cpuCycles: 1000, // Estimated
                     memoryAccessed: MemoryLayout<Vector>.size,
-                    cacheStatistics: CacheStatistics(hits: 1, misses: 0, hitRate: 1.0),
+                    cacheStatistics: ComputeCacheStatistics(
+                        hits: 1,
+                        misses: 0,
+                        hitRate: 1.0
+                    ),
                     gpuComputations: 0,
                     wallClockTime: UInt64(searchTime * 1_000_000_000)
                 ),
@@ -1334,22 +1376,338 @@ private extension HNSWIndex {
     }
     
     // Placeholder implementations for complex operations
-    func shouldOptimize() -> Bool { return count > configuration.optimizationThreshold }
-    func optimizeIfNeeded() async throws {}
-    func estimateNodeMemory(_ node: Node) -> Int { return MemoryLayout<Node>.size }
-    func updateExistingNode(_ entry: VectorEntry<Vector, Metadata>) async throws -> InsertResult { return InsertResult(success: true, insertTime: 0, memoryImpact: 0, indexReorganization: false) }
-    func reactivateNode(_ entry: VectorEntry<Vector, Metadata>) async throws -> InsertResult { return InsertResult(success: true, insertTime: 0, memoryImpact: 0, indexReorganization: false) }
-    func reestablishConnections(for node: inout Node) async throws {}
-    func removeFromNeighborConnections(nodeID: NodeID, level: LayerLevel) async throws {}
-    func findNewEntryPoint() async throws -> NodeID? { return nodes.values.filter { !$0.isDeleted }.max { $0.level < $1.level }?.id }
-    func pruneConnections(nodeID: NodeID, layer: LayerLevel) async throws {}
-    func lightOptimization() async throws {}
-    func aggressiveOptimization() async throws {}
-    func learnedOptimization(model: String) async throws {}
-    func adaptiveOptimization() async throws {}
-    func rebuildConnections() async throws {}
-    func calculateEntryPointQuality(_ nodeID: NodeID) -> Float { return 1.0 }
-    func calculateGraphConnectivity() -> Float { return 1.0 }
+    // MARK: - Private Helper Methods
+    
+    /// Check if optimization is needed based on current index state
+    private func shouldOptimize() -> Bool {
+        let deletedRatio = Float(nodes.values.filter { $0.isDeleted }.count) / Float(max(nodes.count, 1))
+        return count > configuration.optimizationThreshold || deletedRatio > 0.2
+    }
+    
+    /// Optimize the index if needed
+    private func optimizeIfNeeded() async throws {
+        if shouldOptimize() {
+            try await optimize(strategy: .adaptive)
+        }
+    }
+    
+    /// Estimate memory usage for a node
+    private func estimateNodeMemory(_ node: Node) -> Int {
+        let baseSize = MemoryLayout<Node>.size
+        let connectionSize = node.totalConnections * MemoryLayout<NodeID>.size
+        let metadataSize = 256 // Estimated serialized metadata size
+        return baseSize + connectionSize + metadataSize
+    }
+    
+    /// Update an existing node with new data
+    private func updateExistingNode(_ entry: VectorEntry<Vector, Metadata>) async throws -> InsertResult {
+        let startTime = Date()
+        
+        guard var node = nodes[entry.id] else {
+            throw HNSWError.insertionFailed("Node not found for update")
+        }
+        
+        let oldVector = node.vector
+        
+        // Update node data
+        node.vector = entry.vector
+        node.metadata = entry.metadata
+        node.isDeleted = false
+        node.recordAccess()
+        
+        // Re-establish connections if vector changed significantly
+        let vectorChanged = distanceComputer.distance(oldVector, entry.vector) > 0.01
+        if vectorChanged {
+            try await reestablishConnections(for: &node)
+        }
+        
+        nodes[entry.id] = node
+        
+        return InsertResult(
+            success: true,
+            insertTime: Date().timeIntervalSince(startTime),
+            memoryImpact: 0, // No additional memory for update
+            indexReorganization: false
+        )
+    }
+    
+    /// Reactivate a soft-deleted node
+    private func reactivateNode(_ entry: VectorEntry<Vector, Metadata>) async throws -> InsertResult {
+        let startTime = Date()
+        
+        guard var node = nodes[entry.id] else {
+            throw HNSWError.insertionFailed("Node not found for reactivation")
+        }
+        
+        // Update node data
+        node.vector = entry.vector
+        node.metadata = entry.metadata
+        node.isDeleted = false
+        node.recordAccess()
+        
+        // Re-establish all connections
+        try await reestablishConnections(for: &node)
+        
+        nodes[entry.id] = node
+        
+        return InsertResult(
+            success: true,
+            insertTime: Date().timeIntervalSince(startTime),
+            memoryImpact: 0, // Already allocated
+            indexReorganization: false
+        )
+    }
+    
+    /// Re-establish connections for a node (used after updates)
+    private func reestablishConnections(for node: inout Node) async throws {
+        // Clear existing connections
+        for layer in 0...node.level {
+            for neighborID in node.getConnections(at: layer) {
+                if var neighbor = nodes[neighborID] {
+                    neighbor.removeConnection(node.id, at: layer)
+                    nodes[neighborID] = neighbor
+                }
+            }
+            node.connections[layer].removeAll()
+        }
+        
+        // Re-establish connections using standard algorithm
+        try await establishConnections(for: &node)
+    }
+    
+    /// Remove a node from all neighbor connections
+    private func removeFromNeighborConnections(nodeID: NodeID, level: LayerLevel) async throws {
+        for layer in 0...level {
+            // Find all nodes that connect to this node
+            for (neighborID, var neighbor) in nodes {
+                if neighbor.getConnections(at: layer).contains(nodeID) {
+                    neighbor.removeConnection(nodeID, at: layer)
+                    nodes[neighborID] = neighbor
+                    
+                    // Potentially add new connections to maintain connectivity
+                    if neighbor.getConnections(at: layer).count < configuration.maxConnections / 2 {
+                        // Find new connections for this neighbor
+                        let candidates = try await greedySearchLayer(
+                            query: neighbor.vector,
+                            entryPoint: neighbor.id,
+                            layer: layer,
+                            numClosest: configuration.maxConnections
+                        )
+                        
+                        for candidate in candidates {
+                            if candidate.nodeID != neighbor.id && 
+                               neighbor.getConnections(at: layer).count < configuration.maxConnections {
+                                neighbor.addConnection(candidate.nodeID, at: layer)
+                                
+                                // Add bidirectional connection
+                                if var candidateNode = nodes[candidate.nodeID] {
+                                    candidateNode.addConnection(neighbor.id, at: layer)
+                                    nodes[candidate.nodeID] = candidateNode
+                                }
+                            }
+                        }
+                        
+                        nodes[neighborID] = neighbor
+                    }
+                }
+            }
+        }
+    }
+    
+    /// Find a new entry point after the current one is deleted
+    private func findNewEntryPoint() async throws -> NodeID? {
+        // Find the node with the highest layer that isn't deleted
+        let activeNodes = nodes.values.filter { !$0.isDeleted }
+        
+        guard let newEntry = activeNodes.max(by: { $0.level < $1.level }) else {
+            return nil
+        }
+        
+        maxLayer = newEntry.level
+        return newEntry.id
+    }
+    
+    /// Prune excess connections at a layer
+    private func pruneConnections(nodeID: NodeID, layer: LayerLevel) async throws {
+        guard var node = nodes[nodeID] else { return }
+        
+        let connections = node.getConnections(at: layer)
+        guard connections.count > configuration.maxConnections else { return }
+        
+        // Get all connections with distances
+        var candidates: [SearchCandidate] = []
+        for connectedID in connections {
+            guard let connectedNode = nodes[connectedID], !connectedNode.isDeleted else { continue }
+            let distance = distanceComputer.distance(node.vector, connectedNode.vector)
+            candidates.append((distance: distance, nodeID: connectedID))
+        }
+        
+        // Select diverse connections to keep
+        let selected = try await selectConnections(
+            candidates: candidates,
+            query: node.vector,
+            maxConnections: configuration.maxConnections,
+            layer: layer
+        )
+        
+        // Update connections
+        node.connections[layer] = Set(selected.map { $0.nodeID })
+        
+        // Remove bidirectional connections that were pruned
+        let prunedConnections = connections.subtracting(node.connections[layer])
+        for prunedID in prunedConnections {
+            if var prunedNode = nodes[prunedID] {
+                prunedNode.removeConnection(nodeID, at: layer)
+                nodes[prunedID] = prunedNode
+            }
+        }
+        
+        nodes[nodeID] = node
+    }
+    
+    /// Light optimization - quick improvements
+    private func lightOptimization() async throws {
+        logger.info("Performing light optimization")
+        
+        // Remove soft-deleted nodes
+        let deletedCount = nodes.values.filter { $0.isDeleted }.count
+        if deletedCount > 0 {
+            try await compact()
+        }
+        
+        // Prune excessive connections
+        for (nodeID, node) in nodes where !node.isDeleted {
+            for layer in 0...node.level {
+                if node.getConnections(at: layer).count > configuration.maxConnections {
+                    try await pruneConnections(nodeID: nodeID, layer: layer)
+                }
+            }
+        }
+    }
+    
+    /// Aggressive optimization - comprehensive rebuild
+    private func aggressiveOptimization() async throws {
+        logger.info("Performing aggressive optimization")
+        
+        // First do light optimization
+        try await lightOptimization()
+        
+        // Rebuild connections for poorly connected nodes
+        let threshold = Float(configuration.maxConnections) * 0.3
+        for (nodeID, var node) in nodes where !node.isDeleted {
+            let avgConnections = Float(node.totalConnections) / Float(node.level + 1)
+            if avgConnections < threshold {
+                try await reestablishConnections(for: &node)
+                nodes[nodeID] = node
+            }
+        }
+        
+        // Verify and fix entry point
+        if let ep = entryPoint, let epNode = nodes[ep], epNode.isDeleted {
+            entryPoint = try await findNewEntryPoint()
+        }
+    }
+    
+    /// Learned optimization using ML model
+    private func learnedOptimization(model: String) async throws {
+        logger.info("Performing learned optimization with model: \(model)")
+        
+        // In a real implementation, this would use CoreML or CreateML
+        // For now, perform adaptive optimization
+        try await adaptiveOptimization()
+    }
+    
+    /// Adaptive optimization based on usage patterns
+    private func adaptiveOptimization() async throws {
+        logger.info("Performing adaptive optimization")
+        
+        // Analyze access patterns
+        let totalAccesses = nodes.values.reduce(0) { $0 + Int($1.accessCount) }
+        let avgAccesses = totalAccesses / max(nodes.count, 1)
+        
+        // Optimize based on access patterns
+        for (nodeID, var node) in nodes where !node.isDeleted {
+            // Boost connections for frequently accessed nodes
+            if Int(node.accessCount) > avgAccesses * 2 {
+                let targetConnections = min(configuration.maxConnections * 2, 64)
+                for layer in 0...node.level {
+                    if node.getConnections(at: layer).count < targetConnections {
+                        let candidates = try await greedySearchLayer(
+                            query: node.vector,
+                            entryPoint: node.id,
+                            layer: layer,
+                            numClosest: targetConnections
+                        )
+                        
+                        for candidate in candidates where candidate.nodeID != node.id {
+                            node.addConnection(candidate.nodeID, at: layer)
+                            
+                            // Add bidirectional connection
+                            if var candidateNode = nodes[candidate.nodeID] {
+                                candidateNode.addConnection(node.id, at: layer)
+                                nodes[candidate.nodeID] = candidateNode
+                            }
+                        }
+                    }
+                }
+                nodes[nodeID] = node
+            }
+        }
+        
+        // Perform standard optimizations
+        try await lightOptimization()
+    }
+    
+    /// Rebuild all connections in the index
+    private func rebuildConnections() async throws {
+        logger.info("Rebuilding all connections")
+        
+        // Clear all connections
+        for (nodeID, var node) in nodes where !node.isDeleted {
+            for layer in 0...node.level {
+                node.connections[layer].removeAll()
+            }
+            nodes[nodeID] = node
+        }
+        
+        // Rebuild connections for each node
+        for (nodeID, var node) in nodes where !node.isDeleted {
+            try await establishConnections(for: &node)
+            nodes[nodeID] = node
+        }
+    }
+    
+    /// Calculate quality score for entry point
+    private func calculateEntryPointQuality(_ nodeID: NodeID) -> Float {
+        guard let node = nodes[nodeID], !node.isDeleted else { return 0.0 }
+        
+        // Quality based on: layer level, connectivity, and centrality
+        let layerScore = Float(node.level) / Float(max(maxLayer, 1))
+        let connectivityScore = Float(node.totalConnections) / Float(configuration.maxConnections * (node.level + 1))
+        
+        // Simple centrality estimate based on average distance to other nodes
+        var totalDistance: Float = 0
+        var count = 0
+        for (otherID, otherNode) in nodes.prefix(100) where otherID != nodeID && !otherNode.isDeleted {
+            totalDistance += distanceComputer.distance(node.vector, otherNode.vector)
+            count += 1
+        }
+        
+        let centralityScore = count > 0 ? 1.0 / (1.0 + totalDistance / Float(count)) : 0.0
+        
+        return (layerScore * 0.4 + connectivityScore * 0.3 + centralityScore * 0.3)
+    }
+    
+    /// Calculate overall graph connectivity score
+    private func calculateGraphConnectivity() -> Float {
+        let activeNodes = nodes.values.filter { !$0.isDeleted }
+        guard !activeNodes.isEmpty else { return 0.0 }
+        
+        let totalPossibleConnections = activeNodes.count * configuration.maxConnections
+        let actualConnections = activeNodes.reduce(0) { $0 + $1.totalConnections }
+        
+        return Float(actualConnections) / Float(totalPossibleConnections)
+    }
     func exportBinary() async throws -> Data { return Data() }
     func exportJSON() async throws -> Data { return Data() }
     func importBinary(_ data: Data) async throws {}
@@ -1360,7 +1718,7 @@ private extension HNSWIndex {
     func identifyOutliers(_ vectors: [Vector]) -> [VectorID] { return [] }
     func calculateDistributionStatistics(_ vectors: [Vector]) -> DistributionStatistics { return DistributionStatistics(mean: [], variance: [], skewness: [], kurtosis: []) }
     func projectTo2D(_ vectors: [Vector]) async throws -> [[Float]] { return [] }
-    func createVisualizationMetadata(_ nodes: [Node]) -> [String: Any] { return [:] }
+    private func createVisualizationMetadata(_ nodes: [Node]) -> [String: String] { return [:] }
     func estimateBaselineMemory() -> Int { return 1024 }
     func calculateMemoryEfficiency() -> Float { return 1.0 }
 }
@@ -1465,6 +1823,10 @@ private actor HNSWAnalytics {
                 insertTimes.removeFirst(500)
             }
         }
+    }
+    
+    func setLastOptimization(_ date: Date) {
+        self.lastOptimization = date
     }
 }
 
