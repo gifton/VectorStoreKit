@@ -28,3 +28,4 @@ build/
 # Documentation builds
 docs/_build/
 .jazzy/
+build_output.txt

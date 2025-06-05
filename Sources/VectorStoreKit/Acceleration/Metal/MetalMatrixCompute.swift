@@ -90,27 +90,136 @@ public actor MetalMatrixCompute {
         pairs: [(matrixA: [[Float]], matrixB: [[Float]])]
     ) async throws -> [[[Float]]] {
         
-        return try await withThrowingTaskGroup(of: (Int, [[Float]]).self) { group in
-            for (index, pair) in pairs.enumerated() {
-                group.addTask {
-                    let result = try await self.matrixMultiply(
-                        matrixA: pair.matrixA,
-                        matrixB: pair.matrixB
-                    )
-                    return (index, result)
+        let startTime = CFAbsoluteTimeGetCurrent()
+        
+        // For GPU efficiency, batch similar-sized operations
+        let groupedPairs = pairs.enumerated().sorted { lhs, rhs in
+            let lhsSize = lhs.element.matrixA.count * lhs.element.matrixA[0].count
+            let rhsSize = rhs.element.matrixA.count * rhs.element.matrixA[0].count
+            return lhsSize < rhsSize
+        }
+        
+        var results = Array(repeating: [[Float]](), count: pairs.count)
+        
+        // Process in batches for better GPU utilization
+        let batchSize = 4 // Process 4 matrix multiplications at a time
+        for batchStart in stride(from: 0, to: groupedPairs.count, by: batchSize) {
+            let batchEnd = min(batchStart + batchSize, groupedPairs.count)
+            let batch = groupedPairs[batchStart..<batchEnd]
+            
+            // Process batch concurrently
+            try await withThrowingTaskGroup(of: (Int, [[Float]]).self) { group in
+                for (originalIndex, pair) in batch {
+                    group.addTask {
+                        let result = try await self.matrixMultiply(
+                            matrixA: pair.matrixA,
+                            matrixB: pair.matrixB
+                        )
+                        return (originalIndex, result)
+                    }
+                }
+                
+                for try await (index, result) in group {
+                    results[index] = result
                 }
             }
-            
-            var results = Array(repeating: [[Float]](), count: pairs.count)
-            for try await (index, result) in group {
-                results[index] = result
-            }
-            
-            return results
         }
+        
+        let duration = CFAbsoluteTimeGetCurrent() - startTime
+        logger.debug("Batch matrix multiply completed: \(pairs.count) operations in \(duration)s")
+        
+        return results
     }
     
     // MARK: - Matrix Operations
+    
+    /// Matrix addition
+    public func add(
+        _ matrixA: [[Float]],
+        _ matrixB: [[Float]]
+    ) async throws -> [[Float]] {
+        return try await elementWise(.add, matrixA: matrixA, matrixB: matrixB)
+    }
+    
+    /// Matrix subtraction
+    public func subtract(
+        _ matrixA: [[Float]],
+        _ matrixB: [[Float]]
+    ) async throws -> [[Float]] {
+        return try await elementWise(.subtract, matrixA: matrixA, matrixB: matrixB)
+    }
+    
+    /// Matrix scalar multiplication
+    public func scalarMultiply(
+        _ matrix: [[Float]],
+        scalar: Float
+    ) async throws -> [[Float]] {
+        return try await elementWise(.multiply, matrixA: matrix, scalar: scalar)
+    }
+    
+    /// Matrix row sum
+    public func rowSum(_ matrix: [[Float]]) async throws -> [Float] {
+        let rows = matrix.count
+        let cols = matrix[0].count
+        
+        // For small matrices, use CPU
+        if rows * cols < 1000 {
+            return matrix.map { row in row.reduce(0, +) }
+        }
+        
+        // Flatten matrix
+        let flat = matrix.flatMap { $0 }
+        let inputBuffer = try await bufferPool.getBuffer(for: flat)
+        let outputBuffer = try await bufferPool.getBuffer(size: rows * MemoryLayout<Float>.size)
+        
+        defer {
+            Task {
+                await bufferPool.returnBuffer(inputBuffer)
+                await bufferPool.returnBuffer(outputBuffer)
+            }
+        }
+        
+        // Get pipeline
+        let pipeline = try await pipelineManager.getPipeline(functionName: "matrixRowSum")
+        
+        // Create command buffer
+        guard let commandBuffer = await device.makeCommandBuffer() else {
+            throw MetalMatrixError.commandBufferCreationFailed
+        }
+        
+        guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+            throw MetalMatrixError.commandBufferCreationFailed
+        }
+        
+        encoder.setComputePipelineState(pipeline)
+        encoder.setBuffer(inputBuffer, offset: 0, index: 0)
+        encoder.setBuffer(outputBuffer, offset: 0, index: 1)
+        
+        var colsVal = UInt32(cols)
+        encoder.setBytes(&colsVal, length: MemoryLayout<UInt32>.size, index: 2)
+        
+        // Dispatch
+        let threadsPerGroup = min(256, rows)
+        let threadGroups = (rows + threadsPerGroup - 1) / threadsPerGroup
+        
+        encoder.dispatchThreadgroups(
+            MTLSize(width: threadGroups, height: 1, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: threadsPerGroup, height: 1, depth: 1)
+        )
+        encoder.endEncoding()
+        
+        // Execute
+        await withCheckedContinuation { continuation in
+            commandBuffer.addCompletedHandler { _ in
+                continuation.resume()
+            }
+            commandBuffer.commit()
+        }
+        
+        // Extract result
+        let resultPointer = outputBuffer.contents().bindMemory(to: Float.self, capacity: rows)
+        return Array(UnsafeBufferPointer(start: resultPointer, count: rows))
+    }
     
     /// Transpose a matrix
     public func transpose(_ matrix: [[Float]]) async throws -> [[Float]] {
@@ -294,12 +403,84 @@ public actor MetalMatrixCompute {
         matrixB: [[Float]]
     ) async throws -> [[Float]] {
         
-        // Use custom kernel for matrix multiplication
-        let _ = try await pipelineManager.getPipeline(for: .matrixMultiply)
+        let rowsA = matrixA.count
+        let colsA = matrixA[0].count
+        let colsB = matrixB[0].count
         
-        // Implementation would follow similar pattern to MPS version
-        // For now, fallback to CPU
-        return matrixMultiplyCPU(matrixA: matrixA, matrixB: matrixB)
+        // Flatten matrices
+        let flatA = matrixA.flatMap { $0 }
+        let flatB = matrixB.flatMap { $0 }
+        
+        // Create buffers
+        let bufferA = try await bufferPool.getBuffer(for: flatA)
+        let bufferB = try await bufferPool.getBuffer(for: flatB)
+        let bufferC = try await bufferPool.getBuffer(size: rowsA * colsB * MemoryLayout<Float>.size)
+        
+        defer {
+            Task {
+                await bufferPool.returnBuffer(bufferA)
+                await bufferPool.returnBuffer(bufferB)
+                await bufferPool.returnBuffer(bufferC)
+            }
+        }
+        
+        // Get pipeline state
+        let pipeline = try await pipelineManager.getPipeline(functionName: "tiledMatrixMultiply")
+        
+        // Create command buffer
+        guard let commandBuffer = await device.makeCommandBuffer() else {
+            throw MetalMatrixError.commandBufferCreationFailed
+        }
+        
+        guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+            throw MetalMatrixError.commandBufferCreationFailed
+        }
+        
+        // Set pipeline state
+        encoder.setComputePipelineState(pipeline)
+        
+        // Set buffers
+        encoder.setBuffer(bufferA, offset: 0, index: 0)
+        encoder.setBuffer(bufferB, offset: 0, index: 1)
+        encoder.setBuffer(bufferC, offset: 0, index: 2)
+        
+        // Set dimensions
+        var rowsAVal = UInt32(rowsA)
+        var colsAVal = UInt32(colsA)
+        var colsBVal = UInt32(colsB)
+        encoder.setBytes(&rowsAVal, length: MemoryLayout<UInt32>.size, index: 3)
+        encoder.setBytes(&colsAVal, length: MemoryLayout<UInt32>.size, index: 4)
+        encoder.setBytes(&colsBVal, length: MemoryLayout<UInt32>.size, index: 5)
+        
+        // Calculate thread groups
+        let threadsPerThreadgroup = MTLSize(width: 16, height: 16, depth: 1)
+        let threadgroupsPerGrid = MTLSize(
+            width: (colsB + 15) / 16,
+            height: (rowsA + 15) / 16,
+            depth: 1
+        )
+        
+        encoder.dispatchThreadgroups(threadgroupsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
+        encoder.endEncoding()
+        
+        // Execute
+        await withCheckedContinuation { continuation in
+            commandBuffer.addCompletedHandler { _ in
+                continuation.resume()
+            }
+            commandBuffer.commit()
+        }
+        
+        // Extract result
+        let resultPointer = bufferC.contents().bindMemory(to: Float.self, capacity: rowsA * colsB)
+        let resultArray = Array(UnsafeBufferPointer(start: resultPointer, count: rowsA * colsB))
+        
+        // Reshape to 2D
+        return (0..<rowsA).map { row in
+            (0..<colsB).map { col in
+                resultArray[row * colsB + col]
+            }
+        }
     }
     
     private func executeTranspose(
@@ -309,15 +490,48 @@ public actor MetalMatrixCompute {
         cols: Int
     ) async throws {
         
-        // In a real implementation, this would use a transpose kernel
-        // For now, we'll use CPU fallback
-        let inputPointer = inputBuffer.contents().bindMemory(to: Float.self, capacity: rows * cols)
-        let outputPointer = outputBuffer.contents().bindMemory(to: Float.self, capacity: rows * cols)
+        // Get pipeline state
+        let pipeline = try await pipelineManager.getPipeline(functionName: "matrixTransposeCoalesced")
         
-        for row in 0..<rows {
-            for col in 0..<cols {
-                outputPointer[col * rows + row] = inputPointer[row * cols + col]
+        // Create command buffer
+        guard let commandBuffer = await device.makeCommandBuffer() else {
+            throw MetalMatrixError.commandBufferCreationFailed
+        }
+        
+        guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+            throw MetalMatrixError.commandBufferCreationFailed
+        }
+        
+        // Set pipeline state
+        encoder.setComputePipelineState(pipeline)
+        
+        // Set buffers
+        encoder.setBuffer(inputBuffer, offset: 0, index: 0)
+        encoder.setBuffer(outputBuffer, offset: 0, index: 1)
+        
+        // Set dimensions
+        var rowsVal = UInt32(rows)
+        var colsVal = UInt32(cols)
+        encoder.setBytes(&rowsVal, length: MemoryLayout<UInt32>.size, index: 2)
+        encoder.setBytes(&colsVal, length: MemoryLayout<UInt32>.size, index: 3)
+        
+        // Calculate thread groups
+        let threadsPerThreadgroup = MTLSize(width: 16, height: 16, depth: 1)
+        let threadgroupsPerGrid = MTLSize(
+            width: (cols + 15) / 16,
+            height: (rows + 15) / 16,
+            depth: 1
+        )
+        
+        encoder.dispatchThreadgroups(threadgroupsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
+        encoder.endEncoding()
+        
+        // Execute
+        await withCheckedContinuation { continuation in
+            commandBuffer.addCompletedHandler { _ in
+                continuation.resume()
             }
+            commandBuffer.commit()
         }
     }
     
@@ -339,17 +553,100 @@ public actor MetalMatrixCompute {
             )
         }
         
-        // Use Metal for larger operations
-        let _ = try await pipelineManager.getPipeline(for: .elementwiseOperations)
+        let rows = matrixA.count
+        let cols = matrixA[0].count
         
-        // Implementation would encode operation type and execute
-        // For now, fallback to CPU
-        return elementWiseCPU(
-            operation: operation,
-            matrixA: matrixA,
-            matrixB: matrixB,
-            scalar: scalar
+        // Flatten matrix A
+        let flatA = matrixA.flatMap { $0 }
+        let bufferA = try await bufferPool.getBuffer(for: flatA)
+        let bufferResult = try await bufferPool.getBuffer(size: elementCount * MemoryLayout<Float>.size)
+        var bufferB: MTLBuffer?
+        
+        defer {
+            Task {
+                await bufferPool.returnBuffer(bufferA)
+                await bufferPool.returnBuffer(bufferResult)
+                if let bufferB = bufferB {
+                    await bufferPool.returnBuffer(bufferB)
+                }
+            }
+        }
+        
+        // Get appropriate pipeline
+        let pipelineName: String
+        switch operation {
+        case .add:
+            pipelineName = "matrixAdd"
+        case .subtract:
+            pipelineName = "matrixSubtract"
+        case .multiply:
+            if matrixB != nil {
+                pipelineName = "matrixMultiplyElementwise"
+            } else {
+                pipelineName = "matrixScalarMultiply"
+            }
+        case .divide:
+            pipelineName = "matrixDivideElementwise"
+        case .maximum:
+            pipelineName = "matrixMaxElementwise"
+        case .minimum:
+            pipelineName = "matrixMinElementwise"
+        }
+        
+        let pipeline = try await pipelineManager.getPipeline(functionName: pipelineName)
+        
+        // Create command buffer
+        guard let commandBuffer = await device.makeCommandBuffer() else {
+            throw MetalMatrixError.commandBufferCreationFailed
+        }
+        
+        guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+            throw MetalMatrixError.commandBufferCreationFailed
+        }
+        
+        encoder.setComputePipelineState(pipeline)
+        encoder.setBuffer(bufferA, offset: 0, index: 0)
+        
+        // Handle second operand
+        if let matrixB = matrixB {
+            let flatB = matrixB.flatMap { $0 }
+            bufferB = try await bufferPool.getBuffer(for: flatB)
+            encoder.setBuffer(bufferB!, offset: 0, index: 1)
+        } else if let scalar = scalar, operation == .multiply {
+            var scalarVal = scalar
+            encoder.setBytes(&scalarVal, length: MemoryLayout<Float>.size, index: 1)
+        }
+        
+        encoder.setBuffer(bufferResult, offset: 0, index: 2)
+        
+        // Dispatch
+        let threadsPerGroup = 256
+        let threadGroups = (elementCount + threadsPerGroup - 1) / threadsPerGroup
+        
+        encoder.dispatchThreadgroups(
+            MTLSize(width: threadGroups, height: 1, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: threadsPerGroup, height: 1, depth: 1)
         )
+        encoder.endEncoding()
+        
+        // Execute
+        await withCheckedContinuation { continuation in
+            commandBuffer.addCompletedHandler { _ in
+                continuation.resume()
+            }
+            commandBuffer.commit()
+        }
+        
+        // Extract result
+        let resultPointer = bufferResult.contents().bindMemory(to: Float.self, capacity: elementCount)
+        let resultArray = Array(UnsafeBufferPointer(start: resultPointer, count: elementCount))
+        
+        // Reshape to 2D
+        return (0..<rows).map { row in
+            (0..<cols).map { col in
+                resultArray[row * cols + col]
+            }
+        }
     }
     
     // MARK: - CPU Fallbacks
@@ -448,4 +745,13 @@ public enum ElementWiseOperation {
     case divide
     case maximum
     case minimum
+}
+
+/// Matrix computation statistics
+public struct MatrixComputeStatistics: Sendable {
+    public let totalOperations: UInt64
+    public let gpuOperations: UInt64
+    public let cpuFallbacks: UInt64
+    public let averageOperationTime: TimeInterval
+    public let peakMemoryUsage: Int
 }

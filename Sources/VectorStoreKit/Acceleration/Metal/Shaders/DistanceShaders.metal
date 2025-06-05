@@ -116,6 +116,87 @@ kernel void batchEuclideanDistance(
     distances[id.y * numCandidates + id.x] = sqrt(sum);
 }
 
+// MARK: - Batch Cosine Distance
+
+kernel void batchCosineDistance(
+    constant float* queries [[buffer(0)]],
+    constant float* candidates [[buffer(1)]],
+    device float* distances [[buffer(2)]],
+    constant uint& vectorDimension [[buffer(3)]],
+    constant uint& numQueries [[buffer(4)]],
+    constant uint& numCandidates [[buffer(5)]],
+    uint2 id [[thread_position_in_grid]]
+) {
+    if (id.x >= numCandidates || id.y >= numQueries) return;
+    
+    float dotProduct = 0.0;
+    float queryMagnitude = 0.0;
+    float candidateMagnitude = 0.0;
+    
+    uint queryOffset = id.y * vectorDimension;
+    uint candidateOffset = id.x * vectorDimension;
+    
+    for (uint i = 0; i < vectorDimension; ++i) {
+        float q = queries[queryOffset + i];
+        float c = candidates[candidateOffset + i];
+        dotProduct += q * c;
+        queryMagnitude += q * q;
+        candidateMagnitude += c * c;
+    }
+    
+    float similarity = dotProduct / (sqrt(queryMagnitude) * sqrt(candidateMagnitude) + 1e-8);
+    distances[id.y * numCandidates + id.x] = 1.0 - similarity;
+}
+
+// MARK: - Batch Manhattan Distance
+
+kernel void batchManhattanDistance(
+    constant float* queries [[buffer(0)]],
+    constant float* candidates [[buffer(1)]],
+    device float* distances [[buffer(2)]],
+    constant uint& vectorDimension [[buffer(3)]],
+    constant uint& numQueries [[buffer(4)]],
+    constant uint& numCandidates [[buffer(5)]],
+    uint2 id [[thread_position_in_grid]]
+) {
+    if (id.x >= numCandidates || id.y >= numQueries) return;
+    
+    float sum = 0.0;
+    uint queryOffset = id.y * vectorDimension;
+    uint candidateOffset = id.x * vectorDimension;
+    
+    for (uint i = 0; i < vectorDimension; ++i) {
+        sum += abs(queries[queryOffset + i] - candidates[candidateOffset + i]);
+    }
+    
+    distances[id.y * numCandidates + id.x] = sum;
+}
+
+// MARK: - Batch Dot Product
+
+kernel void batchDotProduct(
+    constant float* queries [[buffer(0)]],
+    constant float* candidates [[buffer(1)]],
+    device float* distances [[buffer(2)]],
+    constant uint& vectorDimension [[buffer(3)]],
+    constant uint& numQueries [[buffer(4)]],
+    constant uint& numCandidates [[buffer(5)]],
+    uint2 id [[thread_position_in_grid]]
+) {
+    if (id.x >= numCandidates || id.y >= numQueries) return;
+    
+    float product = 0.0;
+    uint queryOffset = id.y * vectorDimension;
+    uint candidateOffset = id.x * vectorDimension;
+    
+    for (uint i = 0; i < vectorDimension; ++i) {
+        product += queries[queryOffset + i] * candidates[candidateOffset + i];
+    }
+    
+    // Negative dot product for distance (higher dot product = smaller distance)
+    distances[id.y * numCandidates + id.x] = -product;
+}
+
 // MARK: - Normalized Vector Operations
 
 kernel void normalizeVectors(

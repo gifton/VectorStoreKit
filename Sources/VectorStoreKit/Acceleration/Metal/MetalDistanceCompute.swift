@@ -50,10 +50,7 @@ public actor MetalDistanceCompute {
         
         logger.debug("Computing distances for \(candidates.count) vectors")
         
-        // Get appropriate pipeline
-        let pipeline = try await getPipeline(for: metric)
-        
-        // Prepare buffers
+        // Prepare buffers first
         let queryBuffer = try await bufferPool.getBuffer(for: query)
         let candidatesBuffer = try await bufferPool.getBuffer(for: candidates)
         let outputSize = candidates.count * MemoryLayout<Float>.size
@@ -74,9 +71,9 @@ public actor MetalDistanceCompute {
             }
         }
         
-        // Execute computation
-        let distances = try await executeDistanceComputation(
-            pipeline: pipeline,
+        // Execute computation with metric instead of pipeline
+        let distances = try await executeDistanceComputationWithMetric(
+            metric: metric,
             queryBuffer: queryBuffer,
             candidatesBuffer: candidatesBuffer,
             resultsBuffer: resultsBuffer,
@@ -121,13 +118,12 @@ public actor MetalDistanceCompute {
         // Compute each metric
         // In a more optimized version, we could use a single kernel that computes multiple metrics
         for metric in metrics {
-            let pipeline = try await getPipeline(for: metric)
             let resultsBuffer = try await bufferPool.getBuffer(
                 size: candidates.count * MemoryLayout<Float>.size
             )
             
-            let distances = try await executeDistanceComputation(
-                pipeline: pipeline,
+            let distances = try await executeDistanceComputationWithMetric(
+                metric: metric,
                 queryBuffer: queryBuffer,
                 candidatesBuffer: candidatesBuffer,
                 resultsBuffer: resultsBuffer,
@@ -217,8 +213,21 @@ public actor MetalDistanceCompute {
         let dimension = Vector.scalarCount
         
         // Get batch pipeline
-        let basePipelineName = try await getPipelineName(for: metric)
-        let batchPipelineName = "batch" + basePipelineName.rawValue.capitalized
+        let basePipelineName: String
+        switch metric {
+        case .euclidean:
+            basePipelineName = "euclideanDistance"
+        case .cosine:
+            basePipelineName = "cosineDistance"
+        case .manhattan:
+            basePipelineName = "manhattanDistance"
+        case .dotProduct:
+            basePipelineName = "dotProduct"
+        default:
+            throw MetalComputeError.unsupportedOperation(operation: "Distance metric", reason: "Metric \(metric) not supported")
+        }
+        
+        let batchPipelineName = "batch" + basePipelineName.capitalized
         let pipeline = try await pipelineManager.getPipeline(functionName: batchPipelineName)
         
         // Flatten arrays for GPU processing
@@ -351,12 +360,17 @@ public actor MetalDistanceCompute {
     
     // MARK: - Private Methods
     
-    private func getPipeline(for metric: DistanceMetric) async throws -> MTLComputePipelineState {
-        let pipelineName = try await getPipelineName(for: metric)
-        return try await pipelineManager.getPipeline(for: pipelineName)
-    }
     
-    private func getPipelineName(for metric: DistanceMetric) async throws -> MetalPipelineManager.StandardPipeline {
+    private func executeDistanceComputationWithMetric(
+        metric: DistanceMetric,
+        queryBuffer: MTLBuffer,
+        candidatesBuffer: MTLBuffer,
+        resultsBuffer: MTLBuffer,
+        candidateCount: Int,
+        vectorDimension: Int
+    ) async throws -> [Float] {
+        
+        // Get pipeline name first
         let pipelineName: MetalPipelineManager.StandardPipeline
         
         switch metric {
@@ -372,7 +386,56 @@ public actor MetalDistanceCompute {
             throw MetalComputeError.unsupportedOperation(operation: "Distance metric", reason: "Metric \(metric) not supported")
         }
         
-        return pipelineName
+        // Get pipeline directly within the same context
+        let pipeline = try await pipelineManager.getPipeline(for: pipelineName)
+        
+        // Execute the computation inline to avoid passing pipeline
+        guard let commandBuffer = await device.makeCommandBuffer() else {
+            throw MetalComputeError.commandBufferCreationFailed
+        }
+        
+        guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+            throw MetalComputeError.computeEncoderCreationFailed
+        }
+        
+        // Set up compute command
+        encoder.setComputePipelineState(pipeline)
+        encoder.setBuffer(queryBuffer, offset: 0, index: 0)
+        encoder.setBuffer(candidatesBuffer, offset: 0, index: 1)
+        encoder.setBuffer(resultsBuffer, offset: 0, index: 2)
+        
+        // Set vector dimension as constant
+        var dimension = Int32(vectorDimension)
+        encoder.setBytes(&dimension, length: MemoryLayout<Int32>.size, index: 3)
+        
+        // Calculate thread configuration
+        let (threadgroups, threadsPerGroup) = await pipelineManager.getThreadConfiguration(
+            for: pipeline,
+            workSize: candidateCount
+        )
+        
+        encoder.dispatchThreadgroups(threadgroups, threadsPerThreadgroup: threadsPerGroup)
+        encoder.endEncoding()
+        
+        // Execute and wait with error handling
+        await withCheckedContinuation { continuation in
+            commandBuffer.addCompletedHandler { buffer in
+                continuation.resume()
+            }
+            commandBuffer.commit()
+        }
+        
+        // Check for execution errors
+        if let error = commandBuffer.error {
+            throw MetalComputeError.commandBufferExecutionFailed(error: error.localizedDescription)
+        }
+        
+        // Extract results
+        let resultsPointer = resultsBuffer.contents().bindMemory(
+            to: Float.self,
+            capacity: candidateCount
+        )
+        return Array(UnsafeBufferPointer(start: resultsPointer, count: candidateCount))
     }
     
     private func executeDistanceComputation(

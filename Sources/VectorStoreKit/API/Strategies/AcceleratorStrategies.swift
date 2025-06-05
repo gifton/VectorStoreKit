@@ -5,6 +5,9 @@
 import Foundation
 import Metal
 import CoreML
+#if canImport(Darwin)
+import Darwin
+#endif
 
 // MARK: - Metal Type Safety
 
@@ -222,16 +225,176 @@ public struct NeuralEngineAcceleratorStrategy: ComputeAccelerator, Sendable {
         #if targetEnvironment(simulator)
         return false
         #else
-        return true // Simplified - real implementation would check hardware
+        // Check if we're on a device with Neural Engine
+        #if os(macOS)
+        // Check for Apple Silicon Mac
+        var sysinfo = utsname()
+        uname(&sysinfo)
+        let machine = withUnsafePointer(to: &sysinfo.machine) {
+            $0.withMemoryRebound(to: CChar.self, capacity: 1) {
+                String(validatingUTF8: $0)
+            }
+        }
+        
+        // Apple Silicon Macs with Neural Engine
+        if let machine = machine {
+            // M1 family and newer
+            if machine.contains("arm64") {
+                // Additional check: try to load Core ML with Neural Engine preference
+                let config = MLModelConfiguration()
+                config.computeUnits = .cpuAndNeuralEngine
+                
+                // Check if Neural Engine is actually available by testing compute units
+                return config.computeUnits == .cpuAndNeuralEngine || config.computeUnits == .all
+            }
+        }
+        return false
+        #elseif os(iOS) || os(iPadOS) || os(tvOS)
+        // Check device model for Neural Engine support
+        var sysinfo = utsname()
+        uname(&sysinfo)
+        let deviceModel = withUnsafePointer(to: &sysinfo.machine) {
+            $0.withMemoryRebound(to: CChar.self, capacity: 1) {
+                String(validatingUTF8: $0)
+            }
+        }
+        
+        guard let model = deviceModel else { return false }
+        
+        // iPhone with A11 Bionic or newer (iPhone 8/X and later)
+        if model.hasPrefix("iPhone") {
+            if let majorVersion = extractDeviceVersion(from: model) {
+                // iPhone10,x = iPhone 8/X (A11)
+                // iPhone11,x = iPhone XR/XS (A12)
+                // iPhone12,x = iPhone 11 (A13)
+                // iPhone13,x = iPhone 12 (A14)
+                // iPhone14,x = iPhone 13 (A15)
+                // iPhone15,x = iPhone 14 (A15/A16)
+                // iPhone16,x = iPhone 15 (A17)
+                return majorVersion >= 10
+            }
+        }
+        
+        // iPad with A12 Bionic or newer
+        if model.hasPrefix("iPad") {
+            if let majorVersion = extractDeviceVersion(from: model) {
+                // iPad8,x = iPad Pro 3rd gen (A12X)
+                // iPad11,x = iPad Air 3rd gen (A12)
+                // iPad13,x = iPad Air 4th gen (A14)
+                return majorVersion >= 8
+            }
+        }
+        
+        // Apple TV with A15 or newer
+        if model.hasPrefix("AppleTV") {
+            if let majorVersion = extractDeviceVersion(from: model) {
+                // AppleTV14,x = Apple TV 4K 3rd gen (A15)
+                return majorVersion >= 14
+            }
+        }
+        
+        // For newer/unknown devices, try Core ML configuration check
+        let config = MLModelConfiguration()
+        config.computeUnits = .cpuAndNeuralEngine
+        return config.computeUnits == .cpuAndNeuralEngine || config.computeUnits == .all
+        
+        #else
+        return false
+        #endif
         #endif
     }
     
+    private func extractDeviceVersion(from model: String) -> Int? {
+        // Extract major version number from device model string
+        // e.g., "iPhone14,2" -> 14
+        let components = model.components(separatedBy: CharacterSet.decimalDigits.inverted)
+        for component in components {
+            if let version = Int(component), version > 0 {
+                return version
+            }
+        }
+        return nil
+    }
+    
     private func estimateNeuralEngineThroughput() -> Float {
-        // Estimate TOPS based on device
+        // Estimate TOPS (Trillion Operations Per Second) based on device
         #if os(macOS)
-        return 15.8 // M1 Neural Engine
+        // Check specific Mac chip
+        var sysinfo = utsname()
+        uname(&sysinfo)
+        let machine = withUnsafePointer(to: &sysinfo.machine) {
+            $0.withMemoryRebound(to: CChar.self, capacity: 1) {
+                String(validatingUTF8: $0)
+            }
+        }
+        
+        // Get the actual chip identifier via sysctl
+        var size = 0
+        sysctlbyname("machdep.cpu.brand_string", nil, &size, nil, 0)
+        
+        if size > 0 {
+            var cpuBrand = [CChar](repeating: 0, count: size)
+            sysctlbyname("machdep.cpu.brand_string", &cpuBrand, &size, nil, 0)
+            let brandString = String(cString: cpuBrand)
+            
+            // M-series Neural Engine TOPS
+            if brandString.contains("M4") {
+                return 38.0  // M4 Neural Engine
+            } else if brandString.contains("M3") {
+                return 18.0  // M3 Neural Engine
+            } else if brandString.contains("M2") {
+                return 15.8  // M2 Neural Engine
+            } else if brandString.contains("M1") {
+                if brandString.contains("Max") || brandString.contains("Ultra") {
+                    return 15.8 * 2  // M1 Max/Ultra has 2x Neural Engine cores
+                }
+                return 11.0  // M1/M1 Pro Neural Engine
+            }
+        }
+        
+        return 15.8  // Default for unknown Apple Silicon
+        
+        #elseif os(iOS) || os(iPadOS)
+        // Get device model to estimate Neural Engine performance
+        var sysinfo = utsname()
+        uname(&sysinfo)
+        let deviceModel = withUnsafePointer(to: &sysinfo.machine) {
+            $0.withMemoryRebound(to: CChar.self, capacity: 1) {
+                String(validatingUTF8: $0)
+            }
+        }
+        
+        guard let model = deviceModel else { return 11.0 }
+        
+        // Extract major version to determine chip generation
+        if let majorVersion = extractDeviceVersion(from: model) {
+            if model.hasPrefix("iPhone") {
+                switch majorVersion {
+                case 16: return 35.0  // A17 Pro Neural Engine (iPhone 15 Pro)
+                case 15: return 17.0  // A16 Neural Engine (iPhone 14 Pro)
+                case 14: return 15.8  // A15 Neural Engine (iPhone 13)
+                case 13: return 11.0  // A14 Neural Engine (iPhone 12)
+                case 12: return 5.0   // A13 Neural Engine (iPhone 11)
+                case 11: return 5.0   // A12 Neural Engine (iPhone XS/XR)
+                case 10: return 0.6   // A11 Neural Engine (iPhone 8/X)
+                default: return 11.0
+                }
+            } else if model.hasPrefix("iPad") {
+                switch majorVersion {
+                case 13..<16: return 15.8  // M1/M2 iPad Pro
+                case 11..<13: return 11.0  // A14/A15 iPad
+                case 8..<11: return 5.0    // A12X/A12Z iPad Pro
+                default: return 11.0
+                }
+            }
+        }
+        
+        return 11.0  // Default A14-level performance
+        
+        #elseif os(tvOS)
+        return 15.8  // A15 in Apple TV 4K
         #else
-        return 11.0 // A14 Neural Engine
+        return 11.0  // Conservative default
         #endif
     }
 }

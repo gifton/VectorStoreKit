@@ -165,7 +165,7 @@ public struct GeometricProperties: Codable, Sendable {
     public let boundingBox: BoundingBox
     
     /// Topological relationship
-    public let topology: TopologicalRelation
+    public let topology: Topology
 }
 
 public struct BoundingBox: Codable, Sendable {
@@ -182,6 +182,13 @@ public enum TopologicalRelation: String, Codable, Sendable {
     case acute = "acute"               // Acute angle
     case obtuse = "obtuse"             // Obtuse angle
     case general = "general"           // General position
+}
+
+/// Simplified topology type for IVF search
+public enum Topology: String, Codable, Sendable {
+    case dense = "dense"
+    case sparse = "sparse"
+    case general = "general"
 }
 
 // MARK: - Search Provenance

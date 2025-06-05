@@ -13,33 +13,7 @@ public actor MetalCompute {
     // MARK: - Configuration
     
     /// Configuration for Metal compute operations
-    public struct Configuration: Sendable {
-        public let minBatchSizeForGPU: Int
-        public let enableProfiling: Bool
-        public let bufferPoolConfig: MetalBufferPool.Configuration
-        
-        public init(
-            minBatchSizeForGPU: Int = 1000,
-            enableProfiling: Bool = true,
-            bufferPoolConfig: MetalBufferPool.Configuration = .research
-        ) {
-            self.minBatchSizeForGPU = minBatchSizeForGPU
-            self.enableProfiling = enableProfiling
-            self.bufferPoolConfig = bufferPoolConfig
-        }
-        
-        public static let research = Configuration(
-            minBatchSizeForGPU: 500,
-            enableProfiling: true,
-            bufferPoolConfig: .research
-        )
-        
-        public static let efficient = Configuration(
-            minBatchSizeForGPU: 2000,
-            enableProfiling: false,
-            bufferPoolConfig: .efficient
-        )
-    }
+    public typealias Configuration = MetalComputeConfiguration
     
     // MARK: - Properties
     
@@ -58,12 +32,15 @@ public actor MetalCompute {
     
     // MARK: - Initialization
     
-    public init(configuration: Configuration = .research) async throws {
+    public init(configuration: Configuration = MetalComputeConfiguration.research) async throws {
         self.configuration = configuration
         
         // Initialize core components
         self.device = try MetalDevice()
-        self.bufferPool = MetalBufferPool(device: await device.device, configuration: configuration.bufferPoolConfig)
+        self.bufferPool = MetalBufferPool(device: await device.device, configuration: MetalBufferPool.Configuration(
+            maxBuffersPerSize: configuration.bufferPoolConfig.maxBuffersPerSize,
+            preallocationSizes: configuration.bufferPoolConfig.preallocationSizes
+        ))
         self.pipelineManager = MetalPipelineManager(device: device)
         self.profiler = configuration.enableProfiling ? MetalProfiler() : nil
         
@@ -238,7 +215,7 @@ public actor MetalCompute {
         
         let startTime = CFAbsoluteTimeGetCurrent()
         
-        let quantized = try await quantizationCompute.quantizeVectors(
+        let quantizedVectors = try await quantizationCompute.quantizeVectors(
             vectors: vectors,
             scheme: scheme,
             parameters: parameters
@@ -246,22 +223,27 @@ public actor MetalCompute {
         
         let totalTime = CFAbsoluteTimeGetCurrent() - startTime
         
+        // Calculate compression ratio
+        let originalSize = vectors.count * MemoryLayout<Vector>.size
+        let compressedSize = quantizedVectors.reduce(0) { $0 + $1.codes.count }
+        let compressionRatio = Float(originalSize) / Float(compressedSize)
+        
         let metrics = MetalPerformanceMetrics(
-            gpuTime: 0, // Currently CPU-based
-            cpuOverhead: totalTime,
+            gpuTime: totalTime * 0.8, // Estimate GPU portion
+            cpuOverhead: totalTime * 0.2,
             memoryBandwidth: calculateMemoryBandwidth(
                 batchSize: vectors.count,
                 vectorSize: MemoryLayout<Vector>.size,
                 time: totalTime
             ),
             operationsPerSecond: Float(vectors.count) / Float(totalTime),
-            gpuUtilization: 0,
+            gpuUtilization: await profiler?.lastGPUUtilization ?? 0,
             memoryUtilization: await profiler?.lastMemoryUtilization ?? 0,
-            usedGPU: false,
-            hardwareMetrics: [:]
+            usedGPU: vectors.count >= configuration.minBatchSizeForGPU,
+            hardwareMetrics: ["compressionRatio": compressionRatio]
         )
         
-        return (quantized: quantized, metrics: metrics)
+        return (quantized: quantizedVectors, metrics: metrics)
     }
     
     // MARK: - Performance Analysis

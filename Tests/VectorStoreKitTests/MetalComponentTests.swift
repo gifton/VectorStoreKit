@@ -224,6 +224,115 @@ struct MetalDistanceComputeTests {
     }
 }
 
+// MARK: - MetalMatrixCompute Tests
+
+@Suite("MetalMatrixCompute Tests")
+struct MetalMatrixComputeTests {
+    
+    @Test func matrixMultiplication() async throws {
+        guard MTLCreateSystemDefaultDevice() != nil else { return }
+        
+        let device = try MetalDevice()
+        let pool = MetalBufferPool(device: await device.device, configuration: .research)
+        let manager = MetalPipelineManager(device: device)
+        let compute = MetalMatrixCompute<simd_float4>(
+            device: device,
+            bufferPool: pool,
+            pipelineManager: manager
+        )
+        
+        // Test matrices
+        let matrixA: [[Float]] = [
+            [1.0, 2.0, 3.0],
+            [4.0, 5.0, 6.0]
+        ]
+        
+        let matrixB: [[Float]] = [
+            [7.0, 8.0],
+            [9.0, 10.0],
+            [11.0, 12.0]
+        ]
+        
+        let result = try await compute.matrixMultiply(
+            matrixA: matrixA,
+            matrixB: matrixB
+        )
+        
+        // Expected result:
+        // [1*7 + 2*9 + 3*11, 1*8 + 2*10 + 3*12] = [58, 64]
+        // [4*7 + 5*9 + 6*11, 4*8 + 5*10 + 6*12] = [139, 154]
+        
+        #expect(result.count == 2)
+        #expect(result[0].count == 2)
+        #expect(abs(result[0][0] - 58.0) < 0.001)
+        #expect(abs(result[0][1] - 64.0) < 0.001)
+        #expect(abs(result[1][0] - 139.0) < 0.001)
+        #expect(abs(result[1][1] - 154.0) < 0.001)
+    }
+    
+    @Test func matrixTranspose() async throws {
+        guard MTLCreateSystemDefaultDevice() != nil else { return }
+        
+        let device = try MetalDevice()
+        let pool = MetalBufferPool(device: await device.device, configuration: .research)
+        let manager = MetalPipelineManager(device: device)
+        let compute = MetalMatrixCompute<simd_float4>(
+            device: device,
+            bufferPool: pool,
+            pipelineManager: manager
+        )
+        
+        let matrix: [[Float]] = [
+            [1.0, 2.0, 3.0],
+            [4.0, 5.0, 6.0]
+        ]
+        
+        let result = try await compute.transpose(matrix)
+        
+        #expect(result.count == 3)
+        #expect(result[0].count == 2)
+        #expect(result[0][0] == 1.0)
+        #expect(result[0][1] == 4.0)
+        #expect(result[1][0] == 2.0)
+        #expect(result[1][1] == 5.0)
+        #expect(result[2][0] == 3.0)
+        #expect(result[2][1] == 6.0)
+    }
+    
+    @Test func elementWiseOperations() async throws {
+        guard MTLCreateSystemDefaultDevice() != nil else { return }
+        
+        let device = try MetalDevice()
+        let pool = MetalBufferPool(device: await device.device, configuration: .research)
+        let manager = MetalPipelineManager(device: device)
+        let compute = MetalMatrixCompute<simd_float4>(
+            device: device,
+            bufferPool: pool,
+            pipelineManager: manager
+        )
+        
+        let matrixA: [[Float]] = [
+            [1.0, 2.0, 3.0],
+            [4.0, 5.0, 6.0]
+        ]
+        
+        let matrixB: [[Float]] = [
+            [2.0, 3.0, 4.0],
+            [5.0, 6.0, 7.0]
+        ]
+        
+        // Test addition
+        let sum = try await compute.add(matrixA, matrixB)
+        #expect(sum[0][0] == 3.0)
+        #expect(sum[1][2] == 13.0)
+        
+        // Test scalar multiplication
+        let scaled = try await compute.scalarMultiply(matrixA, scalar: 2.0)
+        #expect(scaled[0][0] == 2.0)
+        #expect(scaled[1][2] == 12.0)
+    }
+}
+
 // MARK: - MetalQuantizationCompute Tests
 
 @Suite("MetalQuantizationCompute Tests")

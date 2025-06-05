@@ -100,7 +100,7 @@ public actor VectorStoreMetricsMiddleware: Middleware {
         let startTime = DispatchTime.now()
         
         // Increment operation count
-        await incrementOperationCount(for: commandType)
+        incrementOperationCount(for: commandType)
         
         do {
             let result = try await next(command)
@@ -108,14 +108,14 @@ public actor VectorStoreMetricsMiddleware: Middleware {
             // Record latency
             let endTime = DispatchTime.now()
             let latency = TimeInterval(endTime.uptimeNanoseconds - startTime.uptimeNanoseconds) / 1_000_000_000.0
-            await recordLatency(latency, for: commandType)
+            recordLatency(latency, for: commandType)
             
             return result
         } catch {
             // Still record latency even on error
             let endTime = DispatchTime.now()
             let latency = TimeInterval(endTime.uptimeNanoseconds - startTime.uptimeNanoseconds) / 1_000_000_000.0
-            await recordLatency(latency, for: commandType)
+            recordLatency(latency, for: commandType)
             
             throw error
         }

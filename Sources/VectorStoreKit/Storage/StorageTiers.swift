@@ -33,6 +33,12 @@ actor HotTierStorage {
     
     var allocatedSize: Int { size }
     
+    var count: Int { storage.count }
+    
+    func getAllKeys() -> [String] {
+        Array(storage.keys)
+    }
+    
     func store(key: String, data: Data) {
         // Check if we need to evict
         var currentSize = size
@@ -198,6 +204,12 @@ actor WarmTierStorage {
     }
     
     var allocatedSize: Int { size }
+    
+    var count: Int { metadata.count }
+    
+    func getAllKeys() async -> [String] {
+        Array(metadata.keys)
+    }
     
     func store(key: String, data: Data, options: StorageOptions) async throws {
         let fileURL = urlForKey(key)
@@ -394,6 +406,12 @@ actor ColdTierStorage {
     private var _allocatedSize: Int {
         // Include index overhead
         size + (index.count * 128) // Estimated index entry size
+    }
+    
+    var count: Int { index.count }
+    
+    func getAllKeys() async -> [String] {
+        Array(index.keys)
     }
     
     func store(key: String, data: Data, options: StorageOptions) async throws {
@@ -676,9 +694,56 @@ actor ColdTierStorage {
     }
     
     private func estimateFragmentation() -> Float {
-        // Simple fragmentation estimate based on deleted entries
-        // In real implementation, would track actual space usage
-        return 0.1
+        guard !index.isEmpty else { return 0.0 }
+        
+        // Get pack file size
+        let packFile = getCurrentPackFile()
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: packFile.path),
+              let fileSize = attributes[.size] as? Int else {
+            return 0.0
+        }
+        
+        // Calculate total indexed data size (compressed)
+        let totalIndexedSize = index.values.reduce(0) { $0 + $1.compressedSize }
+        
+        // Calculate wasted space from file system overhead
+        let wastedSpace = max(0, fileSize - totalIndexedSize)
+        
+        // Calculate index overhead (metadata stored separately)
+        let indexOverhead = index.count * 128 // Estimated per-entry overhead
+        
+        // Calculate fragmentation factors:
+        
+        // 1. File space efficiency (how much of the file is actual data vs padding/deleted space)
+        let spaceEfficiency = fileSize > 0 ? Float(totalIndexedSize) / Float(fileSize) : 1.0
+        
+        // 2. Index overhead ratio (metadata size vs data size)
+        let indexOverheadRatio = totalIndexedSize > 0 ? Float(indexOverhead) / Float(totalIndexedSize) : 0.0
+        
+        // 3. Entry size variance (fragmentation due to variable compression ratios)
+        let compressionRatios = index.values.map { entry in
+            entry.originalSize > 0 ? Float(entry.compressedSize) / Float(entry.originalSize) : 1.0
+        }
+        let avgCompressionRatio = compressionRatios.reduce(0, +) / Float(compressionRatios.count)
+        let compressionVariance = compressionRatios.reduce(0) { sum, ratio in
+            let diff = ratio - avgCompressionRatio
+            return sum + (diff * diff)
+        } / Float(compressionRatios.count)
+        let compressionFragmentation = min(sqrt(compressionVariance), 1.0)
+        
+        // 4. File system block alignment inefficiencies
+        let blockSize: Int = 4096 // Typical file system block size
+        let alignmentWaste = wastedSpace % blockSize
+        let alignmentFragmentation = fileSize > 0 ? Float(alignmentWaste) / Float(fileSize) : 0.0
+        
+        // Combine fragmentation factors with weights
+        let weightedFragmentation = 
+            (1.0 - spaceEfficiency) * 0.4 +           // Space waste (highest weight)
+            min(indexOverheadRatio, 1.0) * 0.3 +     // Index overhead
+            compressionFragmentation * 0.2 +          // Compression variance
+            alignmentFragmentation * 0.1              // Block alignment
+        
+        return max(0.0, min(1.0, weightedFragmentation))
     }
 }
 
@@ -717,6 +782,12 @@ actor ArchiveTierStorage {
     }
     
     var allocatedSize: Int { size }
+    
+    var count: Int { archives.count }
+    
+    func getAllKeys() async -> [String] {
+        Array(archives.keys)
+    }
     
     func store(key: String, data: Data, options: StorageOptions) async throws {
         // Use maximum compression

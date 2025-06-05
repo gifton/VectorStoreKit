@@ -156,10 +156,10 @@ public struct InMemoryStorageConfiguration: Sendable, StorageConfiguration, Coda
     // StorageConfiguration protocol requirements
     public func validate() throws {
         guard maxMemory > 0 else {
-            throw ValidationError.invalidConfiguration("Max memory must be positive")
+            throw ConfigurationError.invalidConfiguration("Max memory must be positive")
         }
         guard concurrencyLimit > 0 else {
-            throw ValidationError.invalidConfiguration("Concurrency limit must be positive")
+            throw ConfigurationError.invalidConfiguration("Concurrency limit must be positive")
         }
     }
     
@@ -179,17 +179,6 @@ public struct InMemoryStorageConfiguration: Sendable, StorageConfiguration, Coda
 
 // EvictionPolicy is defined in Core/Protocols.swift
 
-// Add validation error type
-public enum ValidationError: Error, LocalizedError {
-    case invalidConfiguration(String)
-    
-    public var errorDescription: String? {
-        switch self {
-        case .invalidConfiguration(let message):
-            return "Invalid configuration: \(message)"
-        }
-    }
-}
 
 // MARK: - Distributed Storage Strategy
 
@@ -246,10 +235,10 @@ public struct DistributedStorageConfiguration: Sendable, StorageConfiguration, C
     // StorageConfiguration protocol requirements
     public func validate() throws {
         guard !nodes.isEmpty else {
-            throw ValidationError.invalidConfiguration("At least one node is required")
+            throw ConfigurationError.invalidConfiguration("At least one node is required")
         }
         guard replicationFactor > 0 && replicationFactor <= nodes.count else {
-            throw ValidationError.invalidConfiguration("Replication factor must be between 1 and node count")
+            throw ConfigurationError.invalidConfiguration("Replication factor must be between 1 and node count")
         }
     }
     

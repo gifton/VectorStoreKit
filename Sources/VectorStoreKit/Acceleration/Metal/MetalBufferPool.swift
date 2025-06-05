@@ -29,28 +29,7 @@ public struct BufferPoolStatistics: Sendable {
 public actor MetalBufferPool {
     
     /// Configuration for buffer pool
-    public struct Configuration: Sendable {
-        public let maxBuffersPerSize: Int
-        public let preallocationSizes: [Int]
-        
-        public init(
-            maxBuffersPerSize: Int = 10,
-            preallocationSizes: [Int] = []
-        ) {
-            self.maxBuffersPerSize = maxBuffersPerSize
-            self.preallocationSizes = preallocationSizes
-        }
-        
-        public static let research = Configuration(
-            maxBuffersPerSize: 20,
-            preallocationSizes: [1024, 4096, 16384, 65536]
-        )
-        
-        public static let efficient = Configuration(
-            maxBuffersPerSize: 5,
-            preallocationSizes: []
-        )
-    }
+    public typealias Configuration = MetalBufferPoolConfiguration
     
     private let device: MTLDevice
     private let configuration: Configuration

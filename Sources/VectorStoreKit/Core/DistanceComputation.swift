@@ -5,7 +5,8 @@
 import Foundation
 import simd
 import Accelerate
-import Metal
+@preconcurrency import Metal
+import os.log
 
 // MARK: - Distance Computation Protocol
 
@@ -231,6 +232,7 @@ public actor DistanceComputationEngine {
     private let metalDevice: MTLDevice?
     private let metalQueue: MTLCommandQueue?
     private var computePipelines: [String: MTLComputePipelineState] = [:]
+    private let logger = Logger(subsystem: "VectorStoreKit", category: "DistanceComputation")
     
     /// Preferred computation backend
     public enum Backend: String, Sendable {
@@ -295,6 +297,42 @@ public actor DistanceComputationEngine {
         }
     }
     
+    /// Compute distances for multiple queries (batch operation)
+    public func computeBatchDistances<Vector: SIMD>(
+        queries: [Vector],
+        vectors: [Vector],
+        metric: DistanceComputation
+    ) async throws -> [[Float]] where Vector.Scalar: BinaryFloatingPoint {
+        // Check if we have a batch pipeline available
+        let batchPipelineKey = "\(metric.name)_batch"
+        
+        if let metalDevice = metalDevice,
+           let metalQueue = metalQueue,
+           let batchPipeline = computePipelines[batchPipelineKey] {
+            // Use optimized batch computation
+            return try await computeBatchWithMetal(
+                queries: queries,
+                vectors: vectors,
+                metric: metric,
+                device: metalDevice,
+                queue: metalQueue,
+                pipeline: batchPipeline
+            )
+        }
+        
+        // Fallback to sequential computation
+        var results: [[Float]] = []
+        for query in queries {
+            let distances = try await computeDistances(
+                query: query,
+                vectors: vectors,
+                metric: metric
+            )
+            results.append(distances)
+        }
+        return results
+    }
+    
     /// Find k nearest neighbors
     public func findKNearest<Vector: SIMD>(
         query: Vector,
@@ -334,8 +372,68 @@ public actor DistanceComputationEngine {
     }
     
     private func setupMetalPipelines() async throws {
-        // In a real implementation, this would compile Metal shaders
-        // for different distance metrics
+        guard let device = metalDevice else {
+            throw DistanceComputationError.metalNotAvailable
+        }
+        
+        // Load the default Metal library
+        guard let defaultLibrary = device.makeDefaultLibrary() else {
+            // If no compiled Metal library is available, log a warning and continue
+            // This allows the system to fall back to CPU computation
+            logger.warning("Metal shader library not found. Metal acceleration will not be available.")
+            return
+        }
+        
+        // Define the distance metric shaders we want to compile
+        let shaderConfigurations: [(name: String, functionName: String, isBatch: Bool)] = [
+            // Single vector distance metrics (names must match DistanceComputation.name)
+            ("euclidean", "euclideanDistance", false),
+            ("cosine", "cosineDistance", false),
+            ("manhattan", "manhattanDistance", false),
+            ("dot_product", "dotProduct", false),
+            
+            // Batch operations
+            ("euclidean_batch", "batchEuclideanDistance", true),
+            ("cosine_batch", "batchCosineDistance", true),
+            ("manhattan_batch", "batchManhattanDistance", true),
+            ("dot_product_batch", "batchDotProduct", true),
+            
+            // Utility operations
+            ("normalize", "normalizeVectors", false)
+        ]
+        
+        // Compile each shader function into a compute pipeline state
+        for config in shaderConfigurations {
+            do {
+                // Get the function from the library
+                guard let function = defaultLibrary.makeFunction(name: config.functionName) else {
+                    logger.warning("Metal function '\(config.functionName)' not found in library")
+                    continue
+                }
+                
+                // Create the compute pipeline state
+                let pipelineState = try await device.makeComputePipelineState(function: function)
+                
+                // Store in our pipeline cache
+                computePipelines[config.name] = pipelineState
+                
+                // Log successful compilation
+                let threadExecutionWidth = pipelineState.threadExecutionWidth
+                let maxThreadsPerThreadgroup = pipelineState.maxTotalThreadsPerThreadgroup
+                logger.info("Compiled Metal pipeline '\(config.name)': thread width=\(threadExecutionWidth), max threads=\(maxThreadsPerThreadgroup)")
+                
+            } catch {
+                logger.warning("Failed to compile Metal pipeline '\(config.name)': \(error)")
+                // Continue with other pipelines even if one fails
+            }
+        }
+        
+        // Log pipeline initialization status
+        if computePipelines.isEmpty {
+            logger.info("No Metal pipelines compiled. Using CPU fallback for distance computations.")
+        } else {
+            logger.info("Metal pipelines initialized successfully with \(self.computePipelines.count) pipelines")
+        }
     }
     
     private func computeWithMetal<Vector: SIMD>(
@@ -346,9 +444,209 @@ public actor DistanceComputationEngine {
         queue: MTLCommandQueue,
         pipeline: MTLComputePipelineState
     ) async throws -> [Float] where Vector.Scalar: BinaryFloatingPoint {
-        // Metal GPU computation implementation
-        // For now, fallback to CPU
-        return metric.batchDistance(query: query, vectors: vectors)
+        let vectorCount = vectors.count
+        let dimensions = query.scalarCount
+        
+        // Convert query vector to Float array
+        var queryFloats = [Float](repeating: 0, count: dimensions)
+        for i in 0..<dimensions {
+            queryFloats[i] = Float(query[i])
+        }
+        
+        // Flatten all candidate vectors into a single array
+        var candidateFloats = [Float](repeating: 0, count: vectorCount * dimensions)
+        for (vectorIndex, vector) in vectors.enumerated() {
+            let offset = vectorIndex * dimensions
+            for i in 0..<dimensions {
+                candidateFloats[offset + i] = Float(vector[i])
+            }
+        }
+        
+        // Create Metal buffers
+        guard let queryBuffer = device.makeBuffer(
+            bytes: &queryFloats,
+            length: queryFloats.count * MemoryLayout<Float>.size,
+            options: .storageModeShared
+        ) else {
+            throw DistanceComputationError.bufferAllocationFailed
+        }
+        
+        guard let candidatesBuffer = device.makeBuffer(
+            bytes: &candidateFloats,
+            length: candidateFloats.count * MemoryLayout<Float>.size,
+            options: .storageModeShared
+        ) else {
+            throw DistanceComputationError.bufferAllocationFailed
+        }
+        
+        let distanceBufferSize = vectorCount * MemoryLayout<Float>.size
+        guard let distancesBuffer = device.makeBuffer(
+            length: distanceBufferSize,
+            options: .storageModeShared
+        ) else {
+            throw DistanceComputationError.bufferAllocationFailed
+        }
+        
+        // Create command buffer and encoder
+        guard let commandBuffer = queue.makeCommandBuffer() else {
+            throw DistanceComputationError.commandBufferCreationFailed
+        }
+        
+        guard let computeEncoder = commandBuffer.makeComputeCommandEncoder() else {
+            throw DistanceComputationError.commandBufferCreationFailed
+        }
+        
+        // Set the pipeline state and buffers
+        computeEncoder.setComputePipelineState(pipeline)
+        computeEncoder.setBuffer(queryBuffer, offset: 0, index: 0)
+        computeEncoder.setBuffer(candidatesBuffer, offset: 0, index: 1)
+        computeEncoder.setBuffer(distancesBuffer, offset: 0, index: 2)
+        
+        // Set the vector dimension
+        var dimensionValue = UInt32(dimensions)
+        computeEncoder.setBytes(&dimensionValue, length: MemoryLayout<UInt32>.size, index: 3)
+        
+        // Calculate thread groups
+        let threadGroupWidth = pipeline.threadExecutionWidth
+        let threadsPerThreadgroup = MTLSize(width: threadGroupWidth, height: 1, depth: 1)
+        let threadgroupsPerGrid = MTLSize(
+            width: (vectorCount + threadGroupWidth - 1) / threadGroupWidth,
+            height: 1,
+            depth: 1
+        )
+        
+        // Dispatch the compute kernel
+        computeEncoder.dispatchThreadgroups(threadgroupsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
+        computeEncoder.endEncoding()
+        
+        // Execute and wait for completion
+        await withCheckedContinuation { continuation in
+            commandBuffer.addCompletedHandler { _ in
+                continuation.resume()
+            }
+            commandBuffer.commit()
+        }
+        
+        // Read back the results
+        let distancesPointer = distancesBuffer.contents().bindMemory(to: Float.self, capacity: vectorCount)
+        let distances = Array(UnsafeBufferPointer(start: distancesPointer, count: vectorCount))
+        
+        return distances
+    }
+    
+    private func computeBatchWithMetal<Vector: SIMD>(
+        queries: [Vector],
+        vectors: [Vector],
+        metric: DistanceComputation,
+        device: MTLDevice,
+        queue: MTLCommandQueue,
+        pipeline: MTLComputePipelineState
+    ) async throws -> [[Float]] where Vector.Scalar: BinaryFloatingPoint {
+        let numQueries = queries.count
+        let numVectors = vectors.count
+        let dimensions = queries[0].scalarCount
+        
+        // Flatten query vectors
+        var queryFloats = [Float](repeating: 0, count: numQueries * dimensions)
+        for (queryIndex, query) in queries.enumerated() {
+            let offset = queryIndex * dimensions
+            for i in 0..<dimensions {
+                queryFloats[offset + i] = Float(query[i])
+            }
+        }
+        
+        // Flatten candidate vectors
+        var candidateFloats = [Float](repeating: 0, count: numVectors * dimensions)
+        for (vectorIndex, vector) in vectors.enumerated() {
+            let offset = vectorIndex * dimensions
+            for i in 0..<dimensions {
+                candidateFloats[offset + i] = Float(vector[i])
+            }
+        }
+        
+        // Create Metal buffers
+        guard let queryBuffer = device.makeBuffer(
+            bytes: &queryFloats,
+            length: queryFloats.count * MemoryLayout<Float>.size,
+            options: .storageModeShared
+        ) else {
+            throw DistanceComputationError.bufferAllocationFailed
+        }
+        
+        guard let candidatesBuffer = device.makeBuffer(
+            bytes: &candidateFloats,
+            length: candidateFloats.count * MemoryLayout<Float>.size,
+            options: .storageModeShared
+        ) else {
+            throw DistanceComputationError.bufferAllocationFailed
+        }
+        
+        let distanceBufferSize = numQueries * numVectors * MemoryLayout<Float>.size
+        guard let distancesBuffer = device.makeBuffer(
+            length: distanceBufferSize,
+            options: .storageModeShared
+        ) else {
+            throw DistanceComputationError.bufferAllocationFailed
+        }
+        
+        // Create command buffer and encoder
+        guard let commandBuffer = queue.makeCommandBuffer() else {
+            throw DistanceComputationError.commandBufferCreationFailed
+        }
+        
+        guard let computeEncoder = commandBuffer.makeComputeCommandEncoder() else {
+            throw DistanceComputationError.commandBufferCreationFailed
+        }
+        
+        // Set the pipeline state and buffers
+        computeEncoder.setComputePipelineState(pipeline)
+        computeEncoder.setBuffer(queryBuffer, offset: 0, index: 0)
+        computeEncoder.setBuffer(candidatesBuffer, offset: 0, index: 1)
+        computeEncoder.setBuffer(distancesBuffer, offset: 0, index: 2)
+        
+        // Set dimensions and counts
+        var dimensionValue = UInt32(dimensions)
+        var numQueriesValue = UInt32(numQueries)
+        var numVectorsValue = UInt32(numVectors)
+        computeEncoder.setBytes(&dimensionValue, length: MemoryLayout<UInt32>.size, index: 3)
+        computeEncoder.setBytes(&numQueriesValue, length: MemoryLayout<UInt32>.size, index: 4)
+        computeEncoder.setBytes(&numVectorsValue, length: MemoryLayout<UInt32>.size, index: 5)
+        
+        // Calculate thread groups for 2D dispatch
+        let threadsPerThreadgroup = MTLSize(width: 16, height: 16, depth: 1)
+        let threadgroupsPerGrid = MTLSize(
+            width: (numVectors + 15) / 16,
+            height: (numQueries + 15) / 16,
+            depth: 1
+        )
+        
+        // Dispatch the compute kernel
+        computeEncoder.dispatchThreadgroups(threadgroupsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
+        computeEncoder.endEncoding()
+        
+        // Execute and wait for completion
+        await withCheckedContinuation { continuation in
+            commandBuffer.addCompletedHandler { _ in
+                continuation.resume()
+            }
+            commandBuffer.commit()
+        }
+        
+        // Read back the results
+        let distancesPointer = distancesBuffer.contents().bindMemory(to: Float.self, capacity: numQueries * numVectors)
+        
+        // Convert to 2D array
+        var results: [[Float]] = []
+        for queryIndex in 0..<numQueries {
+            var queryDistances: [Float] = []
+            for vectorIndex in 0..<numVectors {
+                let index = queryIndex * numVectors + vectorIndex
+                queryDistances.append(distancesPointer[index])
+            }
+            results.append(queryDistances)
+        }
+        
+        return results
     }
 }
 
@@ -573,6 +871,35 @@ public struct DistanceMetricFactory {
             return LearnedDistance(modelName: "default")
         case .adaptive:
             return AdaptiveDistance()
+        }
+    }
+}
+
+// MARK: - Errors
+
+/// Errors that can occur during distance computation
+public enum DistanceComputationError: Error, LocalizedError {
+    case metalNotAvailable
+    case shaderLibraryNotFound
+    case noPipelinesCompiled
+    case pipelineNotFound(String)
+    case bufferAllocationFailed
+    case commandBufferCreationFailed
+    
+    public var errorDescription: String? {
+        switch self {
+        case .metalNotAvailable:
+            return "Metal is not available on this device"
+        case .shaderLibraryNotFound:
+            return "Failed to load Metal shader library"
+        case .noPipelinesCompiled:
+            return "No Metal pipelines were successfully compiled"
+        case .pipelineNotFound(let name):
+            return "Metal pipeline '\(name)' not found"
+        case .bufferAllocationFailed:
+            return "Failed to allocate Metal buffer"
+        case .commandBufferCreationFailed:
+            return "Failed to create Metal command buffer"
         }
     }
 }

@@ -17,6 +17,9 @@ let package = Package(
         .library(
             name: "VectorStoreKit",
             targets: ["VectorStoreKit"]),
+        .executable(
+            name: "verify-memory",
+            targets: ["VerifyMemory"]),
     ],
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.
@@ -26,7 +29,12 @@ let package = Package(
             exclude: [
                 "Acceleration/Metal/Shaders/DistanceShaders.metal",
                 "Acceleration/Metal/Shaders/MatrixShaders.metal",
-                "Acceleration/Metal/Shaders/QuantizationShaders.metal"
+                "Acceleration/Metal/Shaders/QuantizationShaders.metal",
+                "Acceleration/Metal/Shaders/ClusteringShaders.metal",
+                "Benchmarks/BenchmarkRunner.swift",
+                "Benchmarks/ComprehensiveBenchmarks.swift",
+                "Benchmarks/PerformanceBenchmarks.swift",
+                "Encoding/NeuralEncoder.swift"
             ],
             swiftSettings: [
                 .enableExperimentalFeature("StrictConcurrency"),
@@ -36,6 +44,25 @@ let package = Package(
                 .enableUpcomingFeature("ImplicitOpenExistentials"),
                 .enableUpcomingFeature("DisableOutwardActorInference")
             ]
+        ),
+        .executableTarget(
+            name: "VerifyMemory",
+            dependencies: ["VectorStoreKit"],
+            swiftSettings: [
+                .enableExperimentalFeature("StrictConcurrency")
+            ]
+        ),
+        .executableTarget(
+            name: "TestNeuralEngine",
+            dependencies: ["VectorStoreKit"],
+            path: "Examples",
+            sources: ["TestNeuralEngine.swift"]
+        ),
+        .executableTarget(
+            name: "TestDistanceComputation",
+            dependencies: ["VectorStoreKit"],
+            path: "Examples",
+            sources: ["TestDistanceComputation.swift"]
         ),
         .testTarget(
             name: "VectorStoreKitTests",

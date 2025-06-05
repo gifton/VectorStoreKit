@@ -308,16 +308,63 @@ where Vector.Scalar: BinaryFloatingPoint {
     /// Current memory usage estimate in bytes
     public var memoryUsage: Int {
         get async {
+            // Calculate memory for all nodes
             let nodeMemory = nodes.values.reduce(0) { total, node in
+                // Vector storage
                 let vectorSize = MemoryLayout<Vector>.size
-                let metadataSize = 256 // Estimated metadata serialization size
-                let connectionSize = node.totalConnections * MemoryLayout<NodeID>.size
-                return total + vectorSize + metadataSize + connectionSize
+                
+                // Metadata size estimation (more accurate)
+                let metadataSize = estimateMetadataSize(node.metadata)
+                
+                // Connections storage: each layer has a Set of NodeIDs
+                let connectionMemory = node.connections.reduce(0) { layerTotal, connectionSet in
+                    // Set overhead + String storage for each NodeID
+                    let setOverhead = 48 // Approximate Set structure overhead
+                    let stringMemory = connectionSet.reduce(0) { sum, nodeID in
+                        // String storage: 24 bytes base + character count
+                        sum + 24 + nodeID.utf8.count
+                    }
+                    return layerTotal + setOverhead + stringMemory
+                }
+                
+                // Node structure overhead
+                let nodeOverhead = MemoryLayout<Node>.size
+                
+                // Additional fields in Node
+                let dateMemory = MemoryLayout<Date>.size * 2 // createdAt, lastAccessed
+                let miscMemory = MemoryLayout<UInt64>.size + MemoryLayout<Bool>.size + MemoryLayout<LayerLevel>.size
+                
+                return total + vectorSize + metadataSize + connectionMemory + nodeOverhead + dateMemory + miscMemory
             }
             
+            // Hash table overhead for nodes dictionary
+            let nodesTableOverhead = 48 + (nodes.count * 16) // Dictionary overhead
+            
+            // Other instance properties memory
+            let entryPointMemory = 24 + (entryPoint?.utf8.count ?? 0) // Optional String
+            let primitiveMemory = MemoryLayout<LayerLevel>.size + MemoryLayout<UInt64>.size
+            let rngMemory = MemoryLayout<SystemRandomNumberGenerator>.size
+            let referencesMemory = 48 // Logger and other references
+            let instancePropertiesMemory = entryPointMemory + primitiveMemory + rngMemory + referencesMemory
+            
+            // Configuration memory (approximate)
+            let configMemory = MemoryLayout<Configuration>.size
+            
+            // Analytics memory
             let analyticsMemory = await analytics.memoryUsage
-            return nodeMemory + analyticsMemory
+            
+            return nodeMemory + nodesTableOverhead + instancePropertiesMemory + configMemory + analyticsMemory
         }
+    }
+    
+    /// Estimate the memory size of metadata
+    private func estimateMetadataSize(_ metadata: Metadata) -> Int {
+        // Use JSONEncoder to get a more accurate size estimate
+        if let data = try? JSONEncoder().encode(metadata) {
+            return data.count + 24 // Add overhead for Data structure
+        }
+        // Fallback estimate
+        return 256
     }
     
     /// Whether the index has been optimized recently
@@ -1354,12 +1401,14 @@ where Vector.Scalar: BinaryFloatingPoint {
         return BoundingBox(min: min, max: max, volume: volume)
     }
     
-    func classifyTopology(_ angle: Float) -> TopologicalRelation {
-        if angle < 0.1 { return .coincident }
-        if angle < .pi / 4 { return .acute }
-        if abs(angle - .pi / 2) < 0.1 { return .orthogonal }
-        if angle < .pi * 3 / 4 { return .obtuse }
-        return .general
+    func classifyTopology(_ angle: Float) -> Topology {
+        if angle < 0.1 { 
+            return .dense  // Very close vectors
+        } else if angle > 2.0 { 
+            return .sparse // Far apart vectors
+        } else {
+            return .general // Normal case
+        }
     }
     
     func calculateMagnitudeSimilarity(_ v1: Vector, _ v2: Vector) -> Float {
@@ -1762,7 +1811,24 @@ private actor HNSWAnalytics {
         self.enableDetailedTracking = enableDetailedTracking
     }
     
-    var memoryUsage: Int { return 1024 } // Placeholder
+    var memoryUsage: Int { 
+        // Calculate memory used by analytics data structures
+        let searchTimesMemory = searchTimes.count * MemoryLayout<TimeInterval>.size + 24 // Array overhead
+        let insertTimesMemory = insertTimes.count * MemoryLayout<TimeInterval>.size + 24
+        
+        // Dictionary memory: overhead + entries
+        let dictOverhead = 48
+        let operationCountsMemory = dictOverhead + operationCounts.reduce(0) { total, entry in
+            // String key + UInt64 value + entry overhead
+            total + 24 + entry.key.utf8.count + MemoryLayout<UInt64>.size + 16
+        }
+        
+        // Actor properties
+        let propertiesMemory = MemoryLayout<Bool>.size + MemoryLayout<Date?>.size
+        
+        // Total analytics memory
+        return searchTimesMemory + insertTimesMemory + operationCountsMemory + propertiesMemory
+    }
     var averageSearchTime: TimeInterval { return searchTimes.isEmpty ? 0 : searchTimes.reduce(0, +) / Double(searchTimes.count) }
     var estimatedRecall: Float { return 0.95 } // Placeholder
     var estimatedPrecision: Float { return 0.98 } // Placeholder

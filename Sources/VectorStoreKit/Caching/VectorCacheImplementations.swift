@@ -553,111 +553,9 @@ private struct CacheEntry<Vector: SIMD> where Vector.Scalar: BinaryFloatingPoint
     let timestamp: Date
 }
 
-/// No-op cache configuration
-public struct NoOpCacheConfiguration: CacheConfiguration {
-    public var maxMemory: Int = 0
-    
-    public func validate() throws {
-        // No validation needed for no-op cache
-    }
-    
-    public func estimatedOverhead() -> Float {
-        return 0.0
-    }
-    
-    public func optimalEvictionPolicy() -> EvictionPolicy {
-        return .lru
-    }
-    
-    public func memoryBudget() -> Int {
-        return maxMemory
-    }
-    
-    public func evictionPolicy() -> EvictionPolicy {
-        return .lru
-    }
-}
 
-/// LRU cache configuration
-public struct LRUCacheConfiguration: CacheConfiguration {
-    public let maxMemory: Int
-    
-    public func validate() throws {
-        guard maxMemory > 0 else {
-            throw VectorCacheError.invalidConfiguration("maxMemory must be positive")
-        }
-    }
-    
-    public func estimatedOverhead() -> Float {
-        return 0.1 // 10% overhead for LRU tracking
-    }
-    
-    public func optimalEvictionPolicy() -> EvictionPolicy {
-        return .lru
-    }
-    
-    public func memoryBudget() -> Int {
-        return maxMemory
-    }
-    
-    public func evictionPolicy() -> EvictionPolicy {
-        return .lru
-    }
-}
 
-/// LFU cache configuration
-public struct LFUCacheConfiguration: CacheConfiguration {
-    public let maxMemory: Int
-    
-    public func validate() throws {
-        guard maxMemory > 0 else {
-            throw VectorCacheError.invalidConfiguration("maxMemory must be positive")
-        }
-    }
-    
-    public func estimatedOverhead() -> Float {
-        return 0.15 // 15% overhead for frequency tracking
-    }
-    
-    public func optimalEvictionPolicy() -> EvictionPolicy {
-        return .lfu
-    }
-    
-    public func memoryBudget() -> Int {
-        return maxMemory
-    }
-    
-    public func evictionPolicy() -> EvictionPolicy {
-        return .lfu
-    }
-}
 
-/// FIFO cache configuration
-public struct FIFOCacheConfiguration: CacheConfiguration {
-    public let maxMemory: Int
-    
-    public func validate() throws {
-        guard maxMemory > 0 else {
-            throw VectorCacheError.invalidConfiguration("maxMemory must be positive")
-        }
-    }
-    
-    public func estimatedOverhead() -> Float {
-        return 0.05 // 5% overhead for FIFO
-    }
-    
-    public func optimalEvictionPolicy() -> EvictionPolicy {
-        return .fifo
-    }
-    
-    public func memoryBudget() -> Int {
-        return maxMemory
-    }
-    
-    public func evictionPolicy() -> EvictionPolicy {
-        return .fifo
-    }
-}
 
 /// Basic cache statistics
 public struct BasicCacheStatistics: CacheStatistics {
@@ -686,3 +584,4 @@ public enum VectorCacheError: Error, Sendable {
     case memoryLimitExceeded
     case cacheCorrupted
 }
+

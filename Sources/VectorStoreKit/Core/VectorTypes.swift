@@ -329,3 +329,162 @@ public enum CapacityLevel: Sendable {
     case low, medium, high, unlimited, adaptive
 }
 
+// MARK: - Quantization Types
+
+/// Quantization scheme for vector compression
+public enum QuantizationScheme: Sendable, Codable, Equatable {
+    case scalar(bits: Int = 8)
+    case product(segments: Int, bits: Int = 8)
+    case binary
+    case vector(codebookSize: Int)
+    case learned(modelID: String? = nil)
+    case none
+    
+    // Legacy naming support for backward compatibility
+    public static func scalarQuantization(bits: Int) -> QuantizationScheme {
+        .scalar(bits: bits)
+    }
+    
+    public static func productQuantization(segments: Int, bits: Int) -> QuantizationScheme {
+        .product(segments: segments, bits: bits)
+    }
+    
+    public static var binaryQuantization: QuantizationScheme {
+        .binary
+    }
+    
+    public static func vectorQuantization(codebookSize: Int) -> QuantizationScheme {
+        .vector(codebookSize: codebookSize)
+    }
+    
+    // For Metal shader compatibility
+    public var metalFunctionName: String {
+        switch self {
+        case .scalar: return "scalarQuantize"
+        case .product: return "productQuantize"
+        case .binary: return "binaryQuantize"
+        case .vector: return "vectorQuantize"
+        case .learned: return "learnedQuantize"
+        case .none: return "none"
+        }
+    }
+    
+    // For Metal implementation compatibility
+    public var rawValue: String {
+        switch self {
+        case .scalar: return "scalar"
+        case .product: return "product"
+        case .binary: return "binary"
+        case .vector: return "vector"
+        case .learned: return "learned"
+        case .none: return "none"
+        }
+    }
+}
+
+/// Parameters for quantization operations
+public struct QuantizationParameters: Sendable, Codable {
+    // API-level parameters
+    public let trainingIterations: Int
+    public let useAsymmetricDistance: Bool
+    public let useOptimizedLayout: Bool
+    public let compressionTarget: Float?
+    
+    // Implementation-level parameters
+    public let precision: Int
+    public let centroids: Int?
+    public let subvectors: Int?
+    public let customData: Data?
+    
+    public init(
+        trainingIterations: Int = 25,
+        useAsymmetricDistance: Bool = true,
+        useOptimizedLayout: Bool = true,
+        compressionTarget: Float? = nil,
+        precision: Int = 8,
+        centroids: Int? = nil,
+        subvectors: Int? = nil,
+        customData: Data? = nil
+    ) {
+        self.trainingIterations = trainingIterations
+        self.useAsymmetricDistance = useAsymmetricDistance
+        self.useOptimizedLayout = useOptimizedLayout
+        self.compressionTarget = compressionTarget
+        self.precision = precision
+        self.centroids = centroids
+        self.subvectors = subvectors
+        self.customData = customData
+    }
+}
+
+/// Quantized vector representation
+public struct QuantizedVector: Sendable, Codable {
+    public let codes: [UInt8]
+    public let metadata: QuantizationMetadata
+    
+    public init(codes: [UInt8], metadata: QuantizationMetadata) {
+        self.codes = codes
+        self.metadata = metadata
+    }
+    
+    // Convenience properties for Metal implementation
+    public var quantizedData: Data { 
+        Data(codes) 
+    }
+    
+    public var originalDimensions: Int { 
+        metadata.originalDimensions 
+    }
+    
+    public var scheme: QuantizationScheme { 
+        metadata.scheme 
+    }
+    
+    public var parameters: QuantizationParameters {
+        // Create parameters from metadata for compatibility
+        QuantizationParameters(
+            compressionTarget: metadata.compressionRatio,
+            precision: 8, // Default precision
+            centroids: nil,
+            subvectors: nil
+        )
+    }
+    
+    // Alternative initializer for Metal implementation compatibility
+    public init(
+        originalDimensions: Int,
+        quantizedData: Data,
+        scheme: QuantizationScheme,
+        parameters: QuantizationParameters
+    ) {
+        self.codes = Array(quantizedData)
+        self.metadata = QuantizationMetadata(
+            scheme: scheme,
+            originalDimensions: originalDimensions,
+            compressionRatio: parameters.compressionTarget ?? 1.0,
+            quantizationError: nil
+        )
+    }
+}
+
+/// Metadata for quantized vectors
+public struct QuantizationMetadata: Sendable, Codable {
+    public let scheme: QuantizationScheme
+    public let originalDimensions: Int
+    public let compressionRatio: Float
+    public let quantizationError: Float?
+    
+    public init(
+        scheme: QuantizationScheme,
+        originalDimensions: Int,
+        compressionRatio: Float,
+        quantizationError: Float? = nil
+    ) {
+        self.scheme = scheme
+        self.originalDimensions = originalDimensions
+        self.compressionRatio = compressionRatio
+        self.quantizationError = quantizationError
+    }
+}
+
+
