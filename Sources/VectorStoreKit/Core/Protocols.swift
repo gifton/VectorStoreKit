@@ -774,12 +774,32 @@ public struct CachePerformanceAnalysis: Sendable {
     public let evictionRate: Float
     public let optimalCacheSize: Int
     public let recommendations: [CacheRecommendation]
+    
+    public init(
+        hitRateOverTime: [(Date, Float)],
+        memoryUtilization: Float,
+        evictionRate: Float,
+        optimalCacheSize: Int,
+        recommendations: [CacheRecommendation]
+    ) {
+        self.hitRateOverTime = hitRateOverTime
+        self.memoryUtilization = memoryUtilization
+        self.evictionRate = evictionRate
+        self.optimalCacheSize = optimalCacheSize
+        self.recommendations = recommendations
+    }
 }
 
 public struct CacheRecommendation: Sendable {
     public let type: RecommendationType
     public let description: String
     public let expectedImprovement: Float
+    
+    public init(type: RecommendationType, description: String, expectedImprovement: Float) {
+        self.type = type
+        self.description = description
+        self.expectedImprovement = expectedImprovement
+    }
 }
 
 public enum RecommendationType: String, Sendable {

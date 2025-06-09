@@ -62,11 +62,31 @@ public struct MetalProductionAcceleratorStrategy: ComputeAccelerator, Sendable {
         case .automatic:
             return MTLCreateSystemDefaultDevice()
         case .discrete:
+            #if os(macOS)
             return MTLCopyAllDevices().first { !$0.isLowPower }
+            #else
+            // On iOS, just return the default device as discrete GPU selection isn't applicable
+            return MTLCreateSystemDefaultDevice()
+            #endif
         case .integrated:
+            #if os(macOS)
             return MTLCopyAllDevices().first { $0.isLowPower }
+            #else
+            // On iOS, just return the default device
+            return MTLCreateSystemDefaultDevice()
+            #endif
         case .specific(let name):
+            #if os(macOS)
             return MTLCopyAllDevices().first { $0.name == name }
+            #else
+            if #available(iOS 18.0, *) {
+                return MTLCopyAllDevices().first { $0.name == name }
+            } else {
+                // Fallback to default device on older iOS versions
+                let defaultDevice = MTLCreateSystemDefaultDevice()
+                return defaultDevice?.name == name ? defaultDevice : nil
+            }
+            #endif
         }
     }
     
@@ -175,6 +195,7 @@ public struct MetalPerformanceAcceleratorStrategy: ComputeAccelerator, Sendable 
     }
     
     private func selectHighestPerformanceDevice() -> MTLDevice? {
+        #if os(macOS)
         let devices = MTLCopyAllDevices()
         
         // Prefer discrete GPU if available
@@ -184,6 +205,11 @@ public struct MetalPerformanceAcceleratorStrategy: ComputeAccelerator, Sendable 
         
         // Otherwise use the default device
         return MTLCreateSystemDefaultDevice()
+        #else
+        // On iOS, just return the default device
+        // iOS devices don't have discrete GPUs
+        return MTLCreateSystemDefaultDevice()
+        #endif
     }
 }
 

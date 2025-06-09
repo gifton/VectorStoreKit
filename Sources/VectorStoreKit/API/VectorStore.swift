@@ -395,7 +395,7 @@ where
             }
         }
     }
-    
+    // TODO - Gifton - understa dn Vector vs query
     private func validateQuery(_ query: Vector) throws {
         let expectedDimension = Vector.scalarCount
         if query.scalarCount != expectedDimension {
@@ -635,7 +635,7 @@ public struct StoreStatistics: Sendable, Codable {
     public let performanceStatistics: PerformanceStatistics
     public let accessStatistics: AccessStatistics
     
-    // Statistics are now stored as sendable snapshots instead of protocol existentials
+    // Statistics are stored as sendable snapshots instead of protocol existentials
     @CodableIgnored
     public var indexStatisticsSnapshot: IndexStatisticsSnapshot?
     @CodableIgnored
@@ -721,6 +721,7 @@ public actor PerformanceMonitor: Sendable {
     
     public init() {}
     
+    // TODO - Gifton
     public func start() async {
         // Initialize monitoring
     }
@@ -748,6 +749,7 @@ public actor PerformanceMonitor: Sendable {
         operations[operation] ?? OperationMetrics(duration: 0, memoryUsed: 0, cpuUsage: 0, timestamp: Date())
     }
     
+    // TODO - Gifton
     public func overallStatistics() async -> PerformanceStatistics {
         PerformanceStatistics()
     }
@@ -812,6 +814,7 @@ public struct CacheStatisticsSnapshot: Sendable {
 }
 
 /// Integrity management
+// TODO - Gifton
 public actor IntegrityManager: Sendable {
     public init() {}
     
@@ -821,6 +824,8 @@ public actor IntegrityManager: Sendable {
 }
 
 /// Access pattern analysis
+
+// TODO - Gifton
 public actor AccessPatternAnalyzer: Sendable {
     private var accessRecords: [VectorID: AccessRecord] = [:]
     

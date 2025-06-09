@@ -35,19 +35,25 @@ public struct LearnedIndexConfiguration: IndexConfiguration {
         public let learningRate: Float
         public let regularization: Float
         public let validationSplit: Float
+        public let earlyStoppingPatience: Int
+        public let useLearningRateScheduler: Bool
         
         public init(
             epochs: Int = 100,
             batchSize: Int = 32,
             learningRate: Float = 0.001,
             regularization: Float = 0.0001,
-            validationSplit: Float = 0.1
+            validationSplit: Float = 0.1,
+            earlyStoppingPatience: Int = 10,
+            useLearningRateScheduler: Bool = true
         ) {
             self.epochs = epochs
             self.batchSize = batchSize
             self.learningRate = learningRate
             self.regularization = regularization
             self.validationSplit = validationSplit
+            self.earlyStoppingPatience = earlyStoppingPatience
+            self.useLearningRateScheduler = useLearningRateScheduler
         }
     }
     

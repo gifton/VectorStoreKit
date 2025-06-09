@@ -727,88 +727,13 @@ where Vector.Scalar: BinaryFloatingPoint {
         _ vectors: [StoredVector],
         filter: SearchFilter
     ) async throws -> [StoredVector] {
-        // This is a temporary implementation that mimics the IVFIndex filter logic
-        // In a real implementation, this functionality should be shared or delegated
-        // For now, we'll implement basic filtering here
-        switch filter {
-        case .metadata(_):
-            return vectors.filter { _ in
-                // Simple metadata filtering - in production, decode and check properly
-                return true // Simplified for now
-            }
-            
-        case .vector(let vectorFilter):
-            return vectors.filter { vector in
-                let vec = vector.vector
-                
-                // Check dimension filter if specified
-                if let dimension = vectorFilter.dimension,
-                   dimension < vec.count,
-                   let range = vectorFilter.range {
-                    guard range.contains(vec[dimension]) else {
-                        return false
-                    }
-                }
-                
-                // Apply vector constraint
-                switch vectorFilter.constraint {
-                case .magnitude(let range):
-                    let magnitude = sqrt(vec.reduce(0) { $0 + $1 * $1 })
-                    return range.contains(magnitude)
-                    
-                case .sparsity(let range):
-                    let nonZeroCount = vec.filter { $0 != 0 }.count
-                    let sparsity = Float(nonZeroCount) / Float(vec.count)
-                    return range.contains(sparsity)
-                    
-                case .custom(_):
-                    // Can't apply SIMD predicate without knowing the vector type
-                    return true
-                }
-            }
-            
-        case .composite(let compositeFilter):
-            // Simplified composite filtering
-            switch compositeFilter.operation {
-            case .and:
-                var result = vectors
-                for subFilter in compositeFilter.filters {
-                    result = try await applyFilter(result, filter: subFilter)
-                }
-                return result
-                
-            case .or:
-                var resultSet = Set<String>()
-                var resultVectors: [StoredVector] = []
-                
-                for subFilter in compositeFilter.filters {
-                    let filtered = try await applyFilter(vectors, filter: subFilter)
-                    for vector in filtered {
-                        if !resultSet.contains(vector.id) {
-                            resultSet.insert(vector.id)
-                            resultVectors.append(vector)
-                        }
-                    }
-                }
-                return resultVectors
-                
-            case .not:
-                guard let firstFilter = compositeFilter.filters.first else {
-                    return vectors
-                }
-                let filtered = try await applyFilter(vectors, filter: firstFilter)
-                let filteredIds = Set(filtered.map { $0.id })
-                return vectors.filter { !filteredIds.contains($0.id) }
-            }
-            
-        case .learned(let learnedFilter):
-            // Simple confidence-based filtering
-            guard learnedFilter.confidence > 0 else {
-                return vectors
-            }
-            let keepCount = Int(Float(vectors.count) * learnedFilter.confidence)
-            return Array(vectors.prefix(keepCount))
-        }
+        // Use the shared FilterEvaluator for consistent filtering across the codebase
+        return try await FilterEvaluator.filterVectors(
+            vectors,
+            filter: filter,
+            decoder: JSONDecoder(),
+            encoder: JSONEncoder()
+        )
     }
     
     private func updateSearchHistory(probesUsed: Int, recall: Float, searchTime: TimeInterval) async {

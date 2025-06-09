@@ -6,112 +6,104 @@ import Foundation
 import simd
 import Accelerate
 
-/// Neural network model for learned index
+/// Neural network model wrapper for learned index
 private actor NeuralModel {
-    private var layers: [Layer] = []
+    private let network: NeuralNetwork
     private let architecture: LearnedIndexConfiguration.ModelArchitecture
-    private let metalCompute: VectorStoreKit.MetalCompute?
-    
-    struct Layer: Sendable {
-        let weights: [[Float]]
-        let bias: [Float]
-        let activation: Activation
-        
-        enum Activation: Sendable {
-            case relu
-            case sigmoid
-            case linear
-            case tanh
-        }
-    }
     
     init(
         inputDimensions: Int,
         architecture: LearnedIndexConfiguration.ModelArchitecture,
         metalCompute: VectorStoreKit.MetalCompute?
-    ) {
+    ) async {
         self.architecture = architecture
-        self.metalCompute = metalCompute
         
-        // Build layers in a local variable to avoid accessing actor-isolated property
-        var initialLayers: [Layer] = []
+        // Build layers based on architecture
+        var layers: [any NeuralLayer] = []
         
-        // Initialize layers based on architecture
         switch architecture {
         case .linear:
-            initialLayers = [Layer(
-                weights: Array(repeating: Array(repeating: 0.1, count: inputDimensions), count: 1),
-                bias: [0.0],
-                activation: .linear
-            )]
+            layers.append(DenseLayer(
+                inputSize: inputDimensions,
+                outputSize: 1,
+                activation: .sigmoid,
+                metalCompute: metalCompute
+            ))
             
         case .mlp(let hiddenSizes):
             var inputSize = inputDimensions
             for (i, hiddenSize) in hiddenSizes.enumerated() {
-                let layer = Layer(
-                    weights: Self.initializeWeights(inputSize: inputSize, outputSize: hiddenSize),
-                    bias: Array(repeating: 0.0, count: hiddenSize),
-                    activation: i < hiddenSizes.count - 1 ? .relu : .sigmoid
-                )
-                initialLayers.append(layer)
+                layers.append(DenseLayer(
+                    inputSize: inputSize,
+                    outputSize: hiddenSize,
+                    activation: i < hiddenSizes.count - 1 ? .relu : .linear,
+                    metalCompute: metalCompute
+                ))
                 inputSize = hiddenSize
             }
             // Output layer
-            initialLayers.append(Layer(
-                weights: Self.initializeWeights(inputSize: inputSize, outputSize: 1),
-                bias: [0.0],
-                activation: .sigmoid
+            layers.append(DenseLayer(
+                inputSize: inputSize,
+                outputSize: 1,
+                activation: .sigmoid,
+                metalCompute: metalCompute
             ))
             
         case .residual(let layerCount, let hiddenSize):
-            // Simplified residual network
-            let inputSize = inputDimensions
             // Input projection
-            initialLayers.append(Layer(
-                weights: Self.initializeWeights(inputSize: inputSize, outputSize: hiddenSize),
-                bias: Array(repeating: 0.0, count: hiddenSize),
-                activation: .relu
+            layers.append(DenseLayer(
+                inputSize: inputDimensions,
+                outputSize: hiddenSize,
+                activation: .relu,
+                metalCompute: metalCompute
             ))
+            
             // Residual blocks
             for _ in 0..<layerCount {
-                initialLayers.append(Layer(
-                    weights: Self.initializeWeights(inputSize: hiddenSize, outputSize: hiddenSize),
-                    bias: Array(repeating: 0.0, count: hiddenSize),
-                    activation: .relu
-                ))
+                let residualBlock = ResidualLayer(sublayers: [
+                    DenseLayer(
+                        inputSize: hiddenSize,
+                        outputSize: hiddenSize,
+                        activation: .relu,
+                        metalCompute: metalCompute
+                    ),
+                    DenseLayer(
+                        inputSize: hiddenSize,
+                        outputSize: hiddenSize,
+                        activation: .linear,
+                        metalCompute: metalCompute
+                    )
+                ])
+                layers.append(residualBlock)
             }
+            
             // Output layer
-            initialLayers.append(Layer(
-                weights: Self.initializeWeights(inputSize: hiddenSize, outputSize: 1),
-                bias: [0.0],
-                activation: .sigmoid
+            layers.append(DenseLayer(
+                inputSize: hiddenSize,
+                outputSize: 1,
+                activation: .sigmoid,
+                metalCompute: metalCompute
             ))
         }
         
-        // Assign all layers at once
-        self.layers = initialLayers
+        // Create optimizer
+        let optimizer = AdamOptimizer(
+            learningRate: 0.001,
+            beta1: 0.9,
+            beta2: 0.999
+        )
+        
+        // Initialize neural network
+        self.network = NeuralNetwork(
+            layers: layers,
+            optimizer: optimizer,
+            metalCompute: metalCompute
+        )
     }
     
     func predict(_ input: [Float]) async -> Float {
-        var activation = input
-        
-        for layer in layers {
-            // Matrix multiplication: activation = weights * input + bias
-            var output = layer.bias
-            
-            for (i, weight) in layer.weights.enumerated() {
-                var sum: Float = 0
-                for (j, value) in activation.enumerated() {
-                    sum += weight[j] * value
-                }
-                output[i] += sum
-            }
-            
-            // Apply activation function
-            activation = applyActivation(output, activation: layer.activation)
-        }
-        
-        return activation[0] // Single output for position prediction
+        let output = await network.predict(input)
+        return output[0] // Single output for position prediction
     }
     
     func train(
@@ -119,109 +111,27 @@ private actor NeuralModel {
         targets: [Float],
         config: LearnedIndexConfiguration.TrainingConfiguration
     ) async throws {
-        let dataCount = inputs.count
-        guard dataCount == targets.count else {
-            throw LearnedIndexError.mismatchedTrainingData
-        }
+        // Convert targets to 2D array for neural network
+        let targets2D = targets.map { [$0] }
         
-        // Simple gradient descent training
-        for epoch in 0..<config.epochs {
-            var totalLoss: Float = 0
-            
-            // Mini-batch training
-            for batchStart in stride(from: 0, to: dataCount, by: config.batchSize) {
-                let batchEnd = min(batchStart + config.batchSize, dataCount)
-                let batchInputs = Array(inputs[batchStart..<batchEnd])
-                let batchTargets = Array(targets[batchStart..<batchEnd])
-                
-                // Forward pass and compute loss
-                var predictions: [Float] = []
-                for input in batchInputs {
-                    predictions.append(await predict(input))
-                }
-                
-                // Compute MSE loss
-                let loss = computeMSELoss(predictions: predictions, targets: batchTargets)
-                totalLoss += loss
-                
-                // Backward pass (simplified - just update weights with small delta)
-                await updateWeights(
-                    batchInputs: batchInputs,
-                    predictions: predictions,
-                    targets: batchTargets,
-                    learningRate: config.learningRate
-                )
-            }
-            
-            // Log progress every 10 epochs
-            if epoch % 10 == 0 {
-                let avgLoss = totalLoss / Float(dataCount)
-                print("Epoch \(epoch): Loss = \(avgLoss)")
-            }
-        }
-    }
-    
-    private static func initializeWeights(inputSize: Int, outputSize: Int) -> [[Float]] {
-        // Xavier initialization
-        let scale = sqrt(2.0 / Float(inputSize + outputSize))
-        return (0..<outputSize).map { _ in
-            (0..<inputSize).map { _ in Float.random(in: -scale...scale) }
-        }
-    }
-    
-    private func applyActivation(_ input: [Float], activation: Layer.Activation) -> [Float] {
-        switch activation {
-        case .relu:
-            return input.map { max(0, $0) }
-        case .sigmoid:
-            return input.map { 1.0 / (1.0 + exp(-$0)) }
-        case .linear:
-            return input
-        case .tanh:
-            return input.map { tanh($0) }
-        }
-    }
-    
-    private func computeMSELoss(predictions: [Float], targets: [Float]) -> Float {
-        var sum: Float = 0
-        for (pred, target) in zip(predictions, targets) {
-            let diff = pred - target
-            sum += diff * diff
-        }
-        return sum / Float(predictions.count)
-    }
-    
-    private func updateWeights(
-        batchInputs: [[Float]],
-        predictions: [Float],
-        targets: [Float],
-        learningRate: Float
-    ) async {
-        // Simplified weight update (gradient approximation)
-        // In a real implementation, this would use proper backpropagation
+        // Create training configuration
+        let trainingConfig = NetworkTrainingConfig(
+            epochs: config.epochs,
+            batchSize: config.batchSize,
+            lossFunction: .mse,
+            shuffle: true,
+            logInterval: 10,
+            earlyStoppingPatience: config.earlyStoppingPatience,
+            gradientClipValue: 1.0,
+            learningRateScheduler: config.useLearningRateScheduler ? 
+                CosineAnnealingScheduler(totalSteps: config.epochs) : nil
+        )
         
-        for (i, layer) in layers.enumerated() {
-            var newWeights = layer.weights
-            var newBias = layer.bias
-            
-            // Simple weight update based on error
-            let errors = zip(predictions, targets).map { $0 - $1 }
-            let avgError = errors.reduce(0, +) / Float(errors.count)
-            
-            // Update weights with small perturbation
-            for j in 0..<newWeights.count {
-                for k in 0..<newWeights[j].count {
-                    newWeights[j][k] -= learningRate * avgError * 0.01
-                }
-                newBias[j] -= learningRate * avgError * 0.01
-            }
-            
-            layers[i] = Layer(
-                weights: newWeights,
-                bias: newBias,
-                activation: layer.activation
-            )
-        }
+        try await network.train(
+            inputs: inputs,
+            targets: targets2D,
+            config: trainingConfig
+        )
     }
 }
 
@@ -611,7 +521,7 @@ where Vector.Scalar: BinaryFloatingPoint {
         }
         
         // Initialize model
-        model = NeuralModel(
+        model = await NeuralModel(
             inputDimensions: configuration.dimensions,
             architecture: configuration.modelArchitecture,
             metalCompute: metalCompute

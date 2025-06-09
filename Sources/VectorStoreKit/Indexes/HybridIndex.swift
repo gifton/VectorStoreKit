@@ -35,10 +35,10 @@ where Vector.Scalar: BinaryFloatingPoint {
     }
     
     private actor RoutingModel {
-        private var ivfPerformance: PerformanceMetrics
-        private var learnedPerformance: PerformanceMetrics
+        private var ivfPerformance: RoutingPerformanceMetrics
+        private var learnedPerformance: RoutingPerformanceMetrics
         
-        struct PerformanceMetrics: Sendable {
+        struct RoutingPerformanceMetrics: Sendable {
             var latencies: [Double] = []
             var recalls: [Float] = []
             var averageLatency: Double { latencies.isEmpty ? 0 : latencies.reduce(0, +) / Double(latencies.count) }
@@ -46,8 +46,8 @@ where Vector.Scalar: BinaryFloatingPoint {
         }
         
         init() {
-            self.ivfPerformance = PerformanceMetrics()
-            self.learnedPerformance = PerformanceMetrics()
+            self.ivfPerformance = RoutingPerformanceMetrics()
+            self.learnedPerformance = RoutingPerformanceMetrics()
         }
         
         func recordPerformance(
@@ -105,7 +105,7 @@ where Vector.Scalar: BinaryFloatingPoint {
             }
         }
         
-        private func computeScore(_ metrics: PerformanceMetrics) -> Double {
+        private func computeScore(_ metrics: RoutingPerformanceMetrics) -> Double {
             // Score based on latency (lower is better) and recall (higher is better)
             let latencyScore = metrics.averageLatency > 0 ? 1.0 / metrics.averageLatency : 0
             let recallScore = Double(metrics.averageRecall)

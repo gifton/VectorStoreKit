@@ -1757,11 +1757,32 @@ where Vector.Scalar: BinaryFloatingPoint {
         
         return Float(actualConnections) / Float(totalPossibleConnections)
     }
+    // TODO - Gifton
     func exportBinary() async throws -> Data { return Data() }
     func exportJSON() async throws -> Data { return Data() }
     func importBinary(_ data: Data) async throws {}
     func importJSON(_ data: Data) async throws {}
-    func evaluateFilter(_ filter: SearchFilter, metadata: Metadata) async throws -> Bool { return true }
+    func evaluateFilter(_ filter: SearchFilter, metadata: Metadata) async throws -> Bool {
+        // Convert metadata to Data format for FilterEvaluator
+        let encoder = JSONEncoder()
+        let metadataData = try encoder.encode(metadata)
+        
+        // Create a temporary StoredVector for filter evaluation
+        let tempVector = StoredVector(
+            id: UUID().uuidString,
+            vector: [], // Vector data not needed for metadata filtering
+            metadata: metadataData,
+            timestamp: Date()
+        )
+        
+        // Use FilterEvaluator for consistent filtering
+        return try await FilterEvaluator.evaluateFilter(
+            filter,
+            vector: tempVector,
+            decoder: JSONDecoder(),
+            encoder: encoder
+        )
+    }
     func calculateDensity(_ vectors: [Vector]) -> Float { return 1.0 }
     func analyzeClustering(_ vectors: [Vector]) -> ClusteringAnalysis { return ClusteringAnalysis(estimatedClusters: 1, silhouetteScore: 1.0, inertia: 0.0, clusterCenters: []) }
     func identifyOutliers(_ vectors: [Vector]) -> [VectorID] { return [] }

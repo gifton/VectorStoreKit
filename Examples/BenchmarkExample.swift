@@ -454,8 +454,8 @@ struct BenchmarkExample {
         vectors: [[Float]],
         queries: [[Float]],
         dimensions: Int
-    ) async throws -> [String: PerformanceMetrics] {
-        var results: [String: PerformanceMetrics] = [:]
+    ) async throws -> [String: BenchmarkMetrics] {
+        var results: [String: BenchmarkMetrics] = [:]
         
         // IVF Index
         let ivfConfig = IVFConfiguration(
@@ -508,7 +508,7 @@ struct BenchmarkExample {
         queries: [[Float]],
         requiresTraining: Bool = false,
         trainAfterInsert: Bool = false
-    ) async throws -> PerformanceMetrics where Index.Vector == SIMD128<Float>, Index.Metadata == TestMetadata {
+    ) async throws -> BenchmarkMetrics where Index.Vector == SIMD128<Float>, Index.Metadata == TestMetadata {
         // Training phase
         if requiresTraining && !trainAfterInsert {
             if let trainableIndex = index as? any TrainableIndex {
@@ -551,7 +551,7 @@ struct BenchmarkExample {
         let searchTime = elapsedTime(since: searchStart)
         let recall = totalRecall / Float(queries.count)
         
-        return PerformanceMetrics(
+        return BenchmarkMetrics(
             insertsPerSecond: Double(vectors.count) / insertTime,
             queriesPerSecond: Double(queries.count) / searchTime,
             memoryUsage: await index.memoryUsage,
@@ -573,7 +573,7 @@ struct BenchmarkExample {
 
 // MARK: - Supporting Types
 
-struct PerformanceMetrics {
+struct BenchmarkMetrics {
     let insertsPerSecond: Double
     let queriesPerSecond: Double
     let memoryUsage: Int

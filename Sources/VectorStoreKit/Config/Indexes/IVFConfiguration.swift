@@ -12,10 +12,18 @@ public struct IVFConfiguration: IndexConfiguration {
     public let trainingSampleSize: Int
     public let quantization: QuantizationType?
     public let clusteringConfig: KMeansClusteringConfiguration
+    public let neuralClusteringConfig: NeuralClusteringConfig?
+    public let clusteringMethod: ClusteringMethod
     
     public enum QuantizationType: Sendable, Codable {
         case productQuantization(segments: Int, bits: Int)
         case scalarQuantization(bits: Int)
+    }
+    
+    public enum ClusteringMethod: String, Sendable, Codable {
+        case kmeans = "kmeans"
+        case neural = "neural"
+        case hybrid = "hybrid" // Start with k-means, then refine with neural
     }
     
     public init(
@@ -24,7 +32,9 @@ public struct IVFConfiguration: IndexConfiguration {
         numberOfProbes: Int = 10,
         trainingSampleSize: Int = 100_000,
         quantization: QuantizationType? = nil,
-        clusteringConfig: KMeansClusteringConfiguration = .default
+        clusteringConfig: KMeansClusteringConfiguration = .default,
+        neuralClusteringConfig: NeuralClusteringConfig? = nil,
+        clusteringMethod: ClusteringMethod = .kmeans
     ) {
         self.dimensions = dimensions
         self.numberOfCentroids = numberOfCentroids
@@ -32,6 +42,8 @@ public struct IVFConfiguration: IndexConfiguration {
         self.trainingSampleSize = trainingSampleSize
         self.quantization = quantization
         self.clusteringConfig = clusteringConfig
+        self.neuralClusteringConfig = neuralClusteringConfig
+        self.clusteringMethod = clusteringMethod
     }
     
     public func validate() throws {
@@ -60,7 +72,18 @@ public struct IVFConfiguration: IndexConfiguration {
             vectorMemory = vectorCount * dimensions * MemoryLayout<Float>.size
         }
         
-        return centroidMemory + listMemory + vectorMemory
+        var totalMemory = centroidMemory + listMemory + vectorMemory
+        
+        // Add neural clustering memory if enabled
+        if clusteringMethod == .neural || clusteringMethod == .hybrid,
+           let neuralConfig = neuralClusteringConfig {
+            totalMemory += neuralConfig.estimatedMemoryUsage(
+                dimensions: dimensions,
+                clusters: numberOfCentroids
+            )
+        }
+        
+        return totalMemory
     }
     
     public func computationalComplexity() -> ComputationalComplexity {

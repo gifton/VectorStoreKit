@@ -24,6 +24,7 @@ where Vector.Scalar: BinaryFloatingPoint {
     private var trained: Bool = false
     private var vectorCount: Int = 0
     private let clustering: KMeansClustering
+    private var neuralClustering: NeuralClustering?
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
     
@@ -34,6 +35,23 @@ where Vector.Scalar: BinaryFloatingPoint {
         self.clustering = try await KMeansClustering(
             configuration: configuration.clusteringConfig
         )
+        
+        // Initialize neural clustering if configured
+        if configuration.clusteringMethod == .neural || configuration.clusteringMethod == .hybrid {
+            let neuralConfig = configuration.neuralClusteringConfig ?? NeuralClusteringConfig.balanced
+            let neuralClusteringConfig = NeuralClusteringConfiguration(
+                dimensions: configuration.dimensions,
+                numberOfClusters: configuration.numberOfCentroids,
+                trainingEpochs: neuralConfig.epochs,
+                batchSize: neuralConfig.batchSize,
+                learningRate: neuralConfig.learningRate,
+                adaptiveProbing: neuralConfig.adaptiveProbing,
+                defaultProbes: configuration.numberOfProbes,
+                historySize: neuralConfig.queryHistorySize,
+                adaptationThreshold: neuralConfig.adaptationInterval
+            )
+            self.neuralClustering = try await NeuralClustering(configuration: neuralClusteringConfig)
+        }
         
         // Initialize empty inverted lists
         for i in 0..<configuration.numberOfCentroids {
@@ -71,7 +89,13 @@ where Vector.Scalar: BinaryFloatingPoint {
         let vectorArray = vectorToArray(entry.vector)
         
         // Find nearest centroid
-        let centroidIndex = try await findNearestCentroid(vectorArray)
+        let centroidIndex: Int
+        if let neural = neuralClustering {
+            let nearestCentroids = try await neural.findNearestCentroids(for: vectorArray, count: 1)
+            centroidIndex = nearestCentroids[0]
+        } else {
+            centroidIndex = try await findNearestCentroid(vectorArray)
+        }
         
         // Encode metadata
         let metadataData = try encoder.encode(entry.metadata)
@@ -110,13 +134,22 @@ where Vector.Scalar: BinaryFloatingPoint {
         let queryArray = vectorToArray(query)
         
         // Determine number of probes based on strategy
-        let probes = determineProbeCount(strategy: strategy)
+        let probes: Int
+        let nearestCentroids: [Int]
         
-        // Find nearest centroids to probe
-        let nearestCentroids = try await findNearestCentroids(
-            queryArray,
-            count: probes
-        )
+        if let neural = neuralClustering {
+            // Use neural clustering for probe prediction and centroid selection
+            if configuration.neuralClusteringConfig?.adaptiveProbing == true {
+                probes = try await neural.predictProbeCount(for: queryArray, targetRecall: 0.95)
+            } else {
+                probes = determineProbeCount(strategy: strategy)
+            }
+            nearestCentroids = try await neural.findNearestCentroids(for: queryArray, count: probes)
+        } else {
+            // Use traditional approach
+            probes = determineProbeCount(strategy: strategy)
+            nearestCentroids = try await findNearestCentroids(queryArray, count: probes)
+        }
         
         // Gather candidates from inverted lists
         var candidates: [StoredVector] = []
@@ -143,7 +176,7 @@ where Vector.Scalar: BinaryFloatingPoint {
         let topK = Array(results.prefix(k))
         
         // Convert to SearchResult
-        return try topK.map { stored, distance in
+        let searchResults = try topK.map { stored, distance in
             let metadata = try decoder.decode(Metadata.self, from: stored.metadata)
             return createSimpleSearchResult(
                 id: stored.id,
@@ -152,6 +185,20 @@ where Vector.Scalar: BinaryFloatingPoint {
                 indexAlgorithm: "IVF"
             )
         }
+        
+        // Adapt neural clustering based on query if enabled
+        if configuration.neuralClusteringConfig?.onlineAdaptation == true,
+           let neural = neuralClustering {
+            // Asynchronously adapt to query pattern (non-blocking)
+            Task {
+                try? await neural.adaptToQueries(
+                    queries: [queryArray],
+                    results: [searchResults]
+                )
+            }
+        }
+        
+        return searchResults
     }
     
     public func update(id: String, vector: Vector?, metadata: Metadata?) async throws -> Bool {
@@ -355,13 +402,40 @@ where Vector.Scalar: BinaryFloatingPoint {
             )
         }
         
-        // Perform K-means clustering
-        let result = try await clustering.cluster(
-            vectors: samples,
-            k: configuration.numberOfCentroids
-        )
+        switch configuration.clusteringMethod {
+        case .kmeans:
+            // Traditional K-means clustering
+            let result = try await clustering.cluster(
+                vectors: samples,
+                k: configuration.numberOfCentroids
+            )
+            self.centroids = result.centroids
+            
+        case .neural:
+            // Pure neural clustering
+            guard let neural = neuralClustering else {
+                throw IVFError.invalidParameter("Neural clustering not initialized", 0)
+            }
+            let result = try await neural.train(vectors: samples)
+            self.centroids = result.centroids
+            
+        case .hybrid:
+            // Hybrid approach: K-means followed by neural refinement
+            let kmeansResult = try await clustering.cluster(
+                vectors: samples,
+                k: configuration.numberOfCentroids
+            )
+            
+            guard let neural = neuralClustering else {
+                throw IVFError.invalidParameter("Neural clustering not initialized", 0)
+            }
+            let neuralResult = try await neural.train(
+                vectors: samples,
+                initialCentroids: kmeansResult.centroids
+            )
+            self.centroids = neuralResult.centroids
+        }
         
-        self.centroids = result.centroids
         self.trained = true
         
         // Clear any existing data
@@ -489,178 +563,17 @@ where Vector.Scalar: BinaryFloatingPoint {
         _ candidates: [StoredVector],
         filter: SearchFilter
     ) async throws -> [StoredVector] {
-        switch filter {
-        case .metadata(let metadataFilter):
-            return try await filterByMetadata(candidates, filter: metadataFilter)
-            
-        case .vector(let vectorFilter):
-            return filterByVector(candidates, filter: vectorFilter)
-            
-        case .composite(let compositeFilter):
-            return try await filterByComposite(candidates, filter: compositeFilter)
-            
-        case .learned(let learnedFilter):
-            return try await filterByLearned(candidates, filter: learnedFilter)
-        }
+        // Use the shared FilterEvaluator for consistent filtering
+        return try await FilterEvaluator.filterVectors(
+            candidates,
+            filter: filter,
+            decoder: decoder,
+            encoder: encoder
+        )
     }
     
-    private func filterByMetadata(
-        _ candidates: [StoredVector],
-        filter: MetadataFilter
-    ) async throws -> [StoredVector] {
-        return candidates.compactMap { candidate in
-            // Decode metadata
-            guard let metadata = try? decoder.decode(Metadata.self, from: candidate.metadata) else {
-                return nil
-            }
-            
-            // Convert metadata to dictionary for filtering
-            guard let metadataData = try? encoder.encode(metadata),
-                  let metadataDict = try? JSONSerialization.jsonObject(with: metadataData) as? [String: Any],
-                  let value = metadataDict[filter.key] else {
-                return nil
-            }
-            
-            // Apply filter operation
-            let valueString = String(describing: value)
-            let matches = evaluateFilterOperation(
-                value: valueString,
-                operation: filter.operation,
-                filterValue: filter.value
-            )
-            
-            return matches ? candidate : nil
-        }
-    }
-    
-    private func filterByVector(
-        _ candidates: [StoredVector],
-        filter: VectorFilter
-    ) -> [StoredVector] {
-        return candidates.filter { candidate in
-            let vector = candidate.vector
-            
-            // Check dimension filter if specified
-            if let dimension = filter.dimension,
-               dimension < vector.count,
-               let range = filter.range {
-                guard range.contains(vector[dimension]) else {
-                    return false
-                }
-            }
-            
-            // Apply vector constraint
-            switch filter.constraint {
-            case .magnitude(let range):
-                let magnitude = sqrt(vector.reduce(0) { $0 + $1 * $1 })
-                return range.contains(magnitude)
-                
-            case .sparsity(let range):
-                let nonZeroCount = vector.filter { $0 != 0 }.count
-                let sparsity = Float(nonZeroCount) / Float(vector.count)
-                return range.contains(sparsity)
-                
-            case .custom(let predicate):
-                // Convert array to SIMD vector for custom predicate
-                guard let simdVector = arrayToVector(vector, type: Vector.self) else {
-                    return false
-                }
-                return predicate(simdVector)
-            }
-        }
-    }
-    
-    private func filterByComposite(
-        _ candidates: [StoredVector],
-        filter: CompositeFilter
-    ) async throws -> [StoredVector] {
-        switch filter.operation {
-        case .and:
-            var result = candidates
-            for subFilter in filter.filters {
-                result = try await applyFilter(result, filter: subFilter)
-            }
-            return result
-            
-        case .or:
-            var resultSet = Set<String>()
-            var resultVectors: [StoredVector] = []
-            
-            for subFilter in filter.filters {
-                let filtered = try await applyFilter(candidates, filter: subFilter)
-                for vector in filtered {
-                    if !resultSet.contains(vector.id) {
-                        resultSet.insert(vector.id)
-                        resultVectors.append(vector)
-                    }
-                }
-            }
-            return resultVectors
-            
-        case .not:
-            guard let firstFilter = filter.filters.first else {
-                return candidates
-            }
-            let filtered = try await applyFilter(candidates, filter: firstFilter)
-            let filteredIds = Set(filtered.map { $0.id })
-            return candidates.filter { !filteredIds.contains($0.id) }
-        }
-    }
-    
-    private func filterByLearned(
-        _ candidates: [StoredVector],
-        filter: LearnedFilter
-    ) async throws -> [StoredVector] {
-        // For now, implement a simple confidence-based filtering
-        // In a real implementation, this would use the learned model
-        guard filter.confidence > 0 else {
-            return candidates
-        }
-        
-        // Apply confidence threshold - keep top percentage based on confidence
-        let keepCount = Int(Float(candidates.count) * filter.confidence)
-        return Array(candidates.prefix(keepCount))
-    }
-    
-    private func evaluateFilterOperation(
-        value: String,
-        operation: FilterOperation,
-        filterValue: String
-    ) -> Bool {
-        switch operation {
-        case .equals:
-            return value == filterValue
-        case .notEquals:
-            return value != filterValue
-        case .lessThan:
-            return value < filterValue
-        case .lessThanOrEqual:
-            return value <= filterValue
-        case .greaterThan:
-            return value > filterValue
-        case .greaterThanOrEqual:
-            return value >= filterValue
-        case .contains:
-            return value.contains(filterValue)
-        case .notContains:
-            return !value.contains(filterValue)
-        case .startsWith:
-            return value.hasPrefix(filterValue)
-        case .endsWith:
-            return value.hasSuffix(filterValue)
-        case .in:
-            let values = filterValue.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-            return values.contains(value)
-        case .notIn:
-            let values = filterValue.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-            return !values.contains(value)
-        case .regex:
-            return (try? NSRegularExpression(pattern: filterValue).firstMatch(
-                in: value,
-                range: NSRange(location: 0, length: value.utf16.count)
-            )) != nil
-        }
-    }
+    // The old filter methods have been removed as we now use FilterEvaluator
+    // This provides consistent filtering behavior across all index types
     
     private func calculateVariance(_ values: [Int]) -> Float {
         guard !values.isEmpty else { return 0 }
