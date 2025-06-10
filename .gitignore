@@ -27,5 +27,6 @@ build/
 
 # Documentation builds
 docs/_build/
+Docs/development/
 .jazzy/
 build_output.txt
