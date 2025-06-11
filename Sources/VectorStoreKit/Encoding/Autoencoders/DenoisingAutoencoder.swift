@@ -3,6 +3,7 @@
 // Denoising autoencoder that learns to reconstruct clean data from corrupted inputs
 
 import Foundation
+@preconcurrency import Metal
 
 /// Configuration for denoising autoencoder
 public struct DenoisingAutoencoderConfiguration: AutoencoderConfiguration {
@@ -54,7 +55,7 @@ public actor DenoisingAutoencoder: Autoencoder {
     private let decoder: NeuralNetwork
     private var trained: Bool = false
     private var trainingHistory: TrainingHistory
-    private let metalCompute: MetalCompute?
+    private let metalPipeline: MetalMLPipeline?
     
     public var isTrained: Bool {
         trained
@@ -64,11 +65,22 @@ public actor DenoisingAutoencoder: Autoencoder {
     
     public init(
         configuration: DenoisingAutoencoderConfiguration,
-        metalCompute: MetalCompute? = nil
-    ) async {
+        metalPipeline: MetalMLPipeline? = nil
+    ) async throws {
         self.configuration = configuration
-        self.metalCompute = metalCompute
+        self.metalPipeline = metalPipeline
         self.trainingHistory = TrainingHistory()
+        
+        // Create metalPipeline if not provided
+        let pipeline: MetalMLPipeline
+        if let metalPipeline = metalPipeline {
+            pipeline = metalPipeline
+        } else {
+            guard let device = MTLCreateSystemDefaultDevice() else {
+                throw MetalMLError.commandQueueCreationFailed
+            }
+            pipeline = try MetalMLPipeline(device: device)
+        }
         
         // Build encoder network
         var encoderLayers: [any NeuralLayer] = []
@@ -76,17 +88,18 @@ public actor DenoisingAutoencoder: Autoencoder {
         
         // Hidden layers
         for hiddenSize in configuration.encoderLayers {
-            encoderLayers.append(DenseLayer(
+            encoderLayers.append(try await DenseLayer(
                 inputSize: currentInput,
                 outputSize: hiddenSize,
                 activation: .relu,
-                metalCompute: metalCompute
+                metalPipeline: pipeline
             ))
             
             // Add dropout if specified
             if configuration.regularization.dropout > 0 {
-                encoderLayers.append(DropoutLayer(
-                    rate: configuration.regularization.dropout
+                encoderLayers.append(try await DropoutLayer(
+                    rate: configuration.regularization.dropout,
+                    metalPipeline: pipeline
                 ))
             }
             
@@ -94,11 +107,11 @@ public actor DenoisingAutoencoder: Autoencoder {
         }
         
         // Output layer
-        encoderLayers.append(DenseLayer(
+        encoderLayers.append(try await DenseLayer(
             inputSize: currentInput,
             outputSize: configuration.encodedDimensions,
             activation: .linear,
-            metalCompute: metalCompute
+            metalPipeline: pipeline
         ))
         
         // Build decoder network
@@ -107,17 +120,18 @@ public actor DenoisingAutoencoder: Autoencoder {
         
         // Hidden layers
         for hiddenSize in configuration.decoderLayers {
-            decoderLayers.append(DenseLayer(
+            decoderLayers.append(try await DenseLayer(
                 inputSize: currentInput,
                 outputSize: hiddenSize,
                 activation: .relu,
-                metalCompute: metalCompute
+                metalPipeline: pipeline
             ))
             
             // Add dropout if specified
             if configuration.regularization.dropout > 0 {
-                decoderLayers.append(DropoutLayer(
-                    rate: configuration.regularization.dropout
+                decoderLayers.append(try await DropoutLayer(
+                    rate: configuration.regularization.dropout,
+                    metalPipeline: pipeline
                 ))
             }
             
@@ -125,16 +139,19 @@ public actor DenoisingAutoencoder: Autoencoder {
         }
         
         // Output layer with sigmoid for bounded outputs
-        decoderLayers.append(DenseLayer(
+        decoderLayers.append(try await DenseLayer(
             inputSize: currentInput,
             outputSize: configuration.inputDimensions,
             activation: .sigmoid,
-            metalCompute: metalCompute
+            metalPipeline: pipeline
         ))
         
         // Initialize networks
-        self.encoder = await NeuralNetwork(layers: encoderLayers)
-        self.decoder = await NeuralNetwork(layers: decoderLayers)
+        self.encoder = try await NeuralNetwork(metalPipeline: pipeline)
+        await self.encoder.addLayers(encoderLayers)
+        
+        self.decoder = try await NeuralNetwork(metalPipeline: pipeline)
+        await self.decoder.addLayers(decoderLayers)
     }
     
     // MARK: - Encoding/Decoding
@@ -427,54 +444,43 @@ public actor DenoisingAutoencoder: Autoencoder {
     }
     
     private func clipGradients(_ gradients: LayerGradients, clipValue: Float) -> LayerGradients {
-        var result = LayerGradients()
-        
-        if let weights = gradients.weights {
-            result.weights = weights.map { grad in
-                max(-clipValue, min(clipValue, grad))
-            }
+        let clippedWeights = gradients.weights?.map { grad in
+            max(-clipValue, min(clipValue, grad))
         }
         
-        if let bias = gradients.bias {
-            result.bias = bias.map { grad in
-                max(-clipValue, min(clipValue, grad))
-            }
+        let clippedBias = gradients.bias?.map { grad in
+            max(-clipValue, min(clipValue, grad))
         }
         
-        return result
+        return LayerGradients(weights: clippedWeights, bias: clippedBias)
     }
     
     private func addGradients(_ g1: LayerGradients, _ g2: LayerGradients) -> LayerGradients {
-        var result = LayerGradients()
-        
-        if let w1 = g1.weights, let w2 = g2.weights {
-            result.weights = zip(w1, w2).map { $0 + $1 }
+        let addedWeights: [Float]? = if let w1 = g1.weights, let w2 = g2.weights {
+            zip(w1, w2).map { $0 + $1 }
+        } else {
+            nil
         }
         
-        if let b1 = g1.bias, let b2 = g2.bias {
-            result.bias = zip(b1, b2).map { $0 + $1 }
+        let addedBias: [Float]? = if let b1 = g1.bias, let b2 = g2.bias {
+            zip(b1, b2).map { $0 + $1 }
+        } else {
+            nil
         }
         
-        return result
+        return LayerGradients(weights: addedWeights, bias: addedBias)
     }
     
     private func scaleGradients(_ gradients: LayerGradients, by scale: Float) -> LayerGradients {
-        var result = LayerGradients()
+        let scaledWeights = gradients.weights?.map { $0 * scale }
+        let scaledBias = gradients.bias?.map { $0 * scale }
         
-        if let weights = gradients.weights {
-            result.weights = weights.map { $0 * scale }
-        }
-        
-        if let bias = gradients.bias {
-            result.bias = bias.map { $0 * scale }
-        }
-        
-        return result
+        return LayerGradients(weights: scaledWeights, bias: scaledBias)
     }
     
     private func applyGradients(_ gradients: [LayerGradients], optimizer: any Optimizer) async {
         // Apply gradients to encoder and decoder
-        let encoderGradCount = await encoder.layers.count
+        let encoderGradCount = await encoder.layerCount
         let encoderGrads = Array(gradients.prefix(encoderGradCount))
         let decoderGrads = Array(gradients.suffix(from: encoderGradCount))
         

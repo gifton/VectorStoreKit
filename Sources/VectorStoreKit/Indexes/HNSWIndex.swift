@@ -1771,8 +1771,7 @@ where Vector.Scalar: BinaryFloatingPoint {
         let tempVector = StoredVector(
             id: UUID().uuidString,
             vector: [], // Vector data not needed for metadata filtering
-            metadata: metadataData,
-            timestamp: Date()
+            metadata: metadataData
         )
         
         // Use FilterEvaluator for consistent filtering

@@ -3,6 +3,7 @@
 // Standard autoencoder using Core/ML neural network components
 
 import Foundation
+@preconcurrency import Metal
 
 /// Configuration for standard autoencoder
 public struct StandardAutoencoderConfiguration: AutoencoderConfiguration {
@@ -50,7 +51,7 @@ public actor AutoencoderBase: Autoencoder {
     private let decoder: NeuralNetwork
     private var trained: Bool = false
     private var trainingHistory: TrainingHistory
-    private let metalCompute: MetalCompute?
+    private let metalPipeline: MetalMLPipeline?
     
     public var isTrained: Bool {
         trained
@@ -60,29 +61,41 @@ public actor AutoencoderBase: Autoencoder {
     
     public init(
         configuration: StandardAutoencoderConfiguration,
-        metalCompute: MetalCompute? = nil
-    ) async {
+        metalPipeline: MetalMLPipeline? = nil
+    ) async throws {
         self.configuration = configuration
-        self.metalCompute = metalCompute
+        self.metalPipeline = metalPipeline
         self.trainingHistory = TrainingHistory()
         
         // Build encoder network
         var encoderLayers: [any NeuralLayer] = []
         var currentInput = configuration.inputDimensions
         
+        // Create metalPipeline if not provided
+        let pipeline: MetalMLPipeline
+        if let metalPipeline = metalPipeline {
+            pipeline = metalPipeline
+        } else {
+            guard let device = MTLCreateSystemDefaultDevice() else {
+                throw MetalMLError.commandQueueCreationFailed
+            }
+            pipeline = try MetalMLPipeline(device: device)
+        }
+        
         // Hidden layers
         for hiddenSize in configuration.encoderLayers {
-            encoderLayers.append(DenseLayer(
+            encoderLayers.append(try await DenseLayer(
                 inputSize: currentInput,
                 outputSize: hiddenSize,
                 activation: configuration.encoderActivation,
-                metalCompute: metalCompute
+                metalPipeline: pipeline
             ))
             
             // Add dropout if specified
             if configuration.regularization.dropout > 0 {
-                encoderLayers.append(DropoutLayer(
-                    rate: configuration.regularization.dropout
+                encoderLayers.append(try await DropoutLayer(
+                    rate: configuration.regularization.dropout,
+                    metalPipeline: pipeline
                 ))
             }
             
@@ -90,11 +103,11 @@ public actor AutoencoderBase: Autoencoder {
         }
         
         // Output layer
-        encoderLayers.append(DenseLayer(
+        encoderLayers.append(try await DenseLayer(
             inputSize: currentInput,
             outputSize: configuration.encodedDimensions,
             activation: .linear,
-            metalCompute: metalCompute
+            metalPipeline: pipeline
         ))
         
         // Build decoder network
@@ -103,17 +116,18 @@ public actor AutoencoderBase: Autoencoder {
         
         // Hidden layers
         for hiddenSize in configuration.decoderLayers {
-            decoderLayers.append(DenseLayer(
+            decoderLayers.append(try await DenseLayer(
                 inputSize: currentInput,
                 outputSize: hiddenSize,
                 activation: configuration.decoderActivation,
-                metalCompute: metalCompute
+                metalPipeline: pipeline
             ))
             
             // Add dropout if specified
             if configuration.regularization.dropout > 0 {
-                decoderLayers.append(DropoutLayer(
-                    rate: configuration.regularization.dropout
+                decoderLayers.append(try await DropoutLayer(
+                    rate: configuration.regularization.dropout,
+                    metalPipeline: pipeline
                 ))
             }
             
@@ -121,16 +135,19 @@ public actor AutoencoderBase: Autoencoder {
         }
         
         // Output layer
-        decoderLayers.append(DenseLayer(
+        decoderLayers.append(try await DenseLayer(
             inputSize: currentInput,
             outputSize: configuration.inputDimensions,
             activation: configuration.finalActivation,
-            metalCompute: metalCompute
+            metalPipeline: pipeline
         ))
         
         // Initialize networks
-        self.encoder = await NeuralNetwork(layers: encoderLayers)
-        self.decoder = await NeuralNetwork(layers: decoderLayers)
+        self.encoder = try await NeuralNetwork(metalPipeline: pipeline)
+        await self.encoder.addLayers(encoderLayers)
+        
+        self.decoder = try await NeuralNetwork(metalPipeline: pipeline)
+        await self.decoder.addLayers(decoderLayers)
     }
     
     // MARK: - Encoding/Decoding
@@ -353,36 +370,30 @@ public actor AutoencoderBase: Autoencoder {
     }
     
     private func addGradients(_ g1: LayerGradients, _ g2: LayerGradients) -> LayerGradients {
-        var result = LayerGradients()
+        var weights: [Float]? = nil
+        var bias: [Float]? = nil
         
         if let w1 = g1.weights, let w2 = g2.weights {
-            result.weights = zip(w1, w2).map { $0 + $1 }
+            weights = zip(w1, w2).map { $0 + $1 }
         }
         
         if let b1 = g1.bias, let b2 = g2.bias {
-            result.bias = zip(b1, b2).map { $0 + $1 }
+            bias = zip(b1, b2).map { $0 + $1 }
         }
         
-        return result
+        return LayerGradients(weights: weights, bias: bias)
     }
     
     private func scaleGradients(_ gradients: LayerGradients, by scale: Float) -> LayerGradients {
-        var result = LayerGradients()
+        let weights = gradients.weights?.map { $0 * scale }
+        let bias = gradients.bias?.map { $0 * scale }
         
-        if let weights = gradients.weights {
-            result.weights = weights.map { $0 * scale }
-        }
-        
-        if let bias = gradients.bias {
-            result.bias = bias.map { $0 * scale }
-        }
-        
-        return result
+        return LayerGradients(weights: weights, bias: bias)
     }
     
     private func applyGradients(_ gradients: [LayerGradients], optimizer: any Optimizer) async {
         // Apply gradients to encoder and decoder
-        let encoderGradCount = await encoder.layers.count
+        let encoderGradCount = await encoder.layerCount
         let encoderGrads = Array(gradients.prefix(encoderGradCount))
         let decoderGrads = Array(gradients.suffix(from: encoderGradCount))
         

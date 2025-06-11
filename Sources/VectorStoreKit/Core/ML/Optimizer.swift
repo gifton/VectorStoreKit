@@ -19,6 +19,8 @@ public protocol Optimizer: Sendable {
     func setLearningRate(_ learningRate: Float) async
 }
 
+// MARK: - Optimizer Implementations
+
 /// Stochastic Gradient Descent optimizer
 public actor SGDOptimizer: Optimizer {
     public var learningRate: Float
