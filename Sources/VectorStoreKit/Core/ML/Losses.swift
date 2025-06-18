@@ -27,34 +27,10 @@ public struct LossFunctions {
             }
             loss /= Float(prediction.count)
             
-        case .mae:
-            for i in 0..<prediction.count {
-                loss += abs(prediction[i] - target[i])
-            }
-            loss /= Float(prediction.count)
-            
         case .crossEntropy:
             for i in 0..<prediction.count {
                 loss += -target[i] * log(max(prediction[i], 1e-7))
             }
-            
-        case .binaryCrossEntropy:
-            for i in 0..<prediction.count {
-                loss += -target[i] * log(max(prediction[i], 1e-7)) - (1 - target[i]) * log(max(1 - prediction[i], 1e-7))
-            }
-            loss /= Float(prediction.count)
-            
-        case .huber:
-            let delta: Float = 1.0
-            for i in 0..<prediction.count {
-                let diff = abs(prediction[i] - target[i])
-                if diff <= delta {
-                    loss += 0.5 * diff * diff
-                } else {
-                    loss += delta * (diff - 0.5 * delta)
-                }
-            }
-            loss /= Float(prediction.count)
         }
         
         return loss
@@ -78,31 +54,9 @@ public struct LossFunctions {
                 grad[i] = 2.0 * (prediction[i] - target[i]) / Float(prediction.count)
             }
             
-        case .mae:
-            for i in 0..<prediction.count {
-                let diff = prediction[i] - target[i]
-                grad[i] = diff > 0 ? 1.0 / Float(prediction.count) : -1.0 / Float(prediction.count)
-            }
-            
         case .crossEntropy:
             for i in 0..<prediction.count {
                 grad[i] = -target[i] / max(prediction[i], 1e-7)
-            }
-            
-        case .binaryCrossEntropy:
-            for i in 0..<prediction.count {
-                grad[i] = (-target[i] / max(prediction[i], 1e-7) + (1 - target[i]) / max(1 - prediction[i], 1e-7)) / Float(prediction.count)
-            }
-            
-        case .huber:
-            let delta: Float = 1.0
-            for i in 0..<prediction.count {
-                let diff = prediction[i] - target[i]
-                if abs(diff) <= delta {
-                    grad[i] = diff / Float(prediction.count)
-                } else {
-                    grad[i] = delta * (diff > 0 ? 1.0 : -1.0) / Float(prediction.count)
-                }
             }
         }
         
@@ -120,12 +74,8 @@ public struct LossFunctions {
     }
     
     /// Reconstruction loss for autoencoders
-    public static func reconstructionLoss(original: [Float], reconstructed: [Float], useMAE: Bool = false) -> Float {
-        if useMAE {
-            return compute(lossFunction: .mae, prediction: reconstructed, target: original)
-        } else {
-            return compute(lossFunction: .mse, prediction: reconstructed, target: original)
-        }
+    public static func reconstructionLoss(original: [Float], reconstructed: [Float]) -> Float {
+        return compute(lossFunction: .mse, prediction: reconstructed, target: original)
     }
     
     /// Sparsity loss for sparse autoencoders
@@ -165,7 +115,7 @@ public struct VAELoss {
         logVar: [Float]
     ) -> Float {
         let reconLoss = LossFunctions.compute(
-            lossFunction: .binaryCrossEntropy,
+            lossFunction: .mse,
             prediction: reconstructed,
             target: original
         )
@@ -182,7 +132,7 @@ public struct VAELoss {
     ) -> (reconGrad: [Float], meanGrad: [Float], logVarGrad: [Float]) {
         // Reconstruction gradient
         let reconGrad = LossFunctions.gradient(
-            lossFunction: .binaryCrossEntropy,
+            lossFunction: .mse,
             prediction: reconstructed,
             target: original
         ).map { $0 * reconstructionWeight }

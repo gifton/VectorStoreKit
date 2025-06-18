@@ -7,47 +7,85 @@ import simd
 import Accelerate
 @preconcurrency import Metal
 
-/// Simple neural network wrapper for compatibility
-private actor SimpleNeuralNetwork {
-    private struct SimpleDenseLayer {
-        let weights: [[Float]]
-        let bias: [Float]
-        let activation: Activation
-        
-        func forward(_ input: [Float]) -> [Float] {
-            var output = bias
-            for i in 0..<output.count {
-                for j in 0..<input.count {
-                    output[i] += input[j] * weights[j][i]
-                }
-            }
-            return activation.apply(output)
+// Local export error
+enum LearnedExportError: LocalizedError {
+    case unsupportedFormat(ExportFormat)
+    
+    var errorDescription: String? {
+        switch self {
+        case .unsupportedFormat(let format):
+            return "Unsupported export format: \(format)"
         }
     }
+}
+
+/// Neural network wrapper for learned index predictions
+private actor NeuralNetworkWrapper {
+    private let network: NeuralNetwork
+    private let metalPipeline: MetalMLPipeline
     
-    private var simpleLayers: [SimpleDenseLayer] = []
-    
-    init(layers: [any NeuralLayer]) {
-        // For now, we'll initialize with random weights
-        // In a real implementation, we'd extract weights from the Metal layers
-        self.simpleLayers = []
-    }
-    
-    func forward(_ input: [Float]) async -> [Float] {
-        // For now, return a dummy output
-        // In a real implementation, this would process through the layers
-        return [0.5]
+    init(network: NeuralNetwork, metalPipeline: MetalMLPipeline) {
+        self.network = network
+        self.metalPipeline = metalPipeline
     }
     
     func predict(_ input: [Float]) async -> [Float] {
-        return await forward(input)
+        // Use the NeuralNetwork's compatibility API for Float array predictions
+        return await network.forward(input)
+    }
+    
+    func train(
+        inputs: [[Float]],
+        targets: [Float],
+        config: LearnedIndexConfiguration.TrainingConfiguration
+    ) async throws {
+        // Convert training data to MetalBuffer format
+        var trainingData: [(input: MetalBuffer, target: MetalBuffer)] = []
+        
+        for (input, target) in zip(inputs, targets) {
+            // Create input buffer
+            let inputBuffer = try await metalPipeline.allocateBuffer(shape: TensorShape(input.count))
+            let inputPtr = inputBuffer.buffer.contents().bindMemory(to: Float.self, capacity: input.count)
+            for i in 0..<input.count {
+                inputPtr[i] = input[i]
+            }
+            
+            // Create target buffer (single value for position prediction)
+            let targetBuffer = try await metalPipeline.allocateBuffer(shape: TensorShape(1))
+            let targetPtr = targetBuffer.buffer.contents().bindMemory(to: Float.self, capacity: 1)
+            targetPtr[0] = target
+            
+            trainingData.append((input: inputBuffer, target: targetBuffer))
+        }
+        
+        // Create training configuration
+        let networkConfig = NetworkTrainingConfig(
+            epochs: config.epochs,
+            batchSize: config.batchSize,
+            learningRate: config.learningRate,
+            lossFunction: .mse,  // Use MSE for regression
+            shuffle: true,
+            logInterval: 10,
+            earlyStoppingPatience: config.earlyStoppingPatience
+        )
+        
+        // Train the network
+        try await network.train(data: trainingData, config: networkConfig)
+        
+        // Release buffers
+        for (input, target) in trainingData {
+            await metalPipeline.releaseBuffer(input)
+            await metalPipeline.releaseBuffer(target)
+        }
     }
 }
 
 /// Neural network model wrapper for learned index
 private actor NeuralModel {
-    private let network: SimpleNeuralNetwork
+    private let network: NeuralNetwork
+    private let networkWrapper: NeuralNetworkWrapper
     private let architecture: LearnedIndexConfiguration.ModelArchitecture
+    private let metalPipeline: MetalMLPipeline
     
     init(
         inputDimensions: Int,
@@ -57,88 +95,88 @@ private actor NeuralModel {
         self.architecture = architecture
         
         // Create metalPipeline if not provided
-        let pipeline: MetalMLPipeline
         if let metalPipeline = metalPipeline {
-            pipeline = metalPipeline
+            self.metalPipeline = metalPipeline
         } else {
             guard let device = MTLCreateSystemDefaultDevice() else {
                 throw MetalMLError.commandQueueCreationFailed
             }
-            pipeline = try MetalMLPipeline(device: device)
+            self.metalPipeline = try MetalMLPipeline(device: device)
         }
         
-        // Build layers based on architecture
-        var layers: [any NeuralLayer] = []
+        // Initialize neural network
+        self.network = try await NeuralNetwork(metalPipeline: self.metalPipeline)
         
+        // Build layers based on architecture
         switch architecture {
         case .linear:
-            layers.append(try await DenseLayer(
+            await network.addLayer(try await DenseLayer(
                 inputSize: inputDimensions,
                 outputSize: 1,
                 activation: .sigmoid,
-                metalPipeline: pipeline
+                metalPipeline: self.metalPipeline
             ))
             
         case .mlp(let hiddenSizes):
             var inputSize = inputDimensions
             for (i, hiddenSize) in hiddenSizes.enumerated() {
-                layers.append(try await DenseLayer(
+                await network.addLayer(try await DenseLayer(
                     inputSize: inputSize,
                     outputSize: hiddenSize,
                     activation: i < hiddenSizes.count - 1 ? .relu : .linear,
-                    metalPipeline: pipeline
+                    metalPipeline: self.metalPipeline
                 ))
                 inputSize = hiddenSize
             }
             // Output layer
-            layers.append(try await DenseLayer(
+            await network.addLayer(try await DenseLayer(
                 inputSize: inputSize,
                 outputSize: 1,
                 activation: .sigmoid,
-                metalPipeline: pipeline
+                metalPipeline: self.metalPipeline
             ))
             
         case .residual(let layerCount, let hiddenSize):
             // Input projection
-            layers.append(try await DenseLayer(
+            await network.addLayer(try await DenseLayer(
                 inputSize: inputDimensions,
                 outputSize: hiddenSize,
                 activation: .relu,
-                metalPipeline: pipeline
+                metalPipeline: self.metalPipeline
             ))
             
             // Residual blocks - simplified without ResidualLayer
             for _ in 0..<layerCount {
                 // Add two dense layers to simulate residual connection
-                layers.append(try await DenseLayer(
+                await network.addLayer(try await DenseLayer(
                     inputSize: hiddenSize,
                     outputSize: hiddenSize,
                     activation: .relu,
-                    metalPipeline: pipeline
+                    metalPipeline: self.metalPipeline
                 ))
-                layers.append(try await DenseLayer(
+                await network.addLayer(try await DenseLayer(
                     inputSize: hiddenSize,
                     outputSize: hiddenSize,
                     activation: .relu,
-                    metalPipeline: pipeline
+                    metalPipeline: self.metalPipeline
                 ))
             }
             
             // Output layer
-            layers.append(try await DenseLayer(
+            await network.addLayer(try await DenseLayer(
                 inputSize: hiddenSize,
                 outputSize: 1,
                 activation: .sigmoid,
-                metalPipeline: pipeline
+                metalPipeline: self.metalPipeline
             ))
         }
         
-        // Initialize neural network
-        self.network = SimpleNeuralNetwork(layers: layers)
+        // Initialize network wrapper
+        self.networkWrapper = NeuralNetworkWrapper(network: network, metalPipeline: self.metalPipeline)
     }
     
     func predict(_ input: [Float]) async -> Float {
-        let output = await network.predict(input)
+        let output = await networkWrapper.predict(input)
         return output[0] // Single output for position prediction
     }
     
@@ -147,10 +185,7 @@ private actor NeuralModel {
         targets: [Float],
         config: LearnedIndexConfiguration.TrainingConfiguration
     ) async throws {
-        // TODO: Implement training for SimpleNeuralNetwork
-        // For now, this is a placeholder that doesn't actually train
-        // The network would need proper backpropagation implementation
-        print("Warning: Neural network training not implemented in LearnedIndex")
+        try await networkWrapper.train(inputs: inputs, targets: targets, config: config)
     }
 }
 
@@ -433,7 +468,7 @@ where Vector.Scalar: BinaryFloatingPoint {
         case .binary:
             return try PropertyListEncoder().encode(exportData)
         default:
-            throw ExportError.unsupportedFormat(format)
+            throw LearnedExportError.unsupportedFormat(format)
         }
     }
     

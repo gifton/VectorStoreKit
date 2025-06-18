@@ -17,6 +17,8 @@ public actor MetalMatrixCompute {
     private let bufferPool: MetalBufferPool
     private let pipelineManager: MetalPipelineManager
     private let profiler: MetalProfiler?
+    private let commandBufferPool: MetalCommandBufferPool
+    private let batchOptimizer: MetalBatchOptimizer
     
     private let logger = Logger(subsystem: "VectorStoreKit", category: "MetalMatrixCompute")
     
@@ -26,12 +28,26 @@ public actor MetalMatrixCompute {
         device: MetalDevice,
         bufferPool: MetalBufferPool,
         pipelineManager: MetalPipelineManager,
-        profiler: MetalProfiler? = nil
-    ) {
+        profiler: MetalProfiler? = nil,
+        commandBufferPool: MetalCommandBufferPool? = nil,
+        batchOptimizer: MetalBatchOptimizer? = nil
+    ) async {
         self.device = device
         self.bufferPool = bufferPool
         self.pipelineManager = pipelineManager
         self.profiler = profiler
+        
+        if let commandBufferPool = commandBufferPool {
+            self.commandBufferPool = commandBufferPool
+        } else {
+            self.commandBufferPool = MetalCommandBufferPool(device: device, profiler: profiler)
+        }
+        
+        if let batchOptimizer = batchOptimizer {
+            self.batchOptimizer = batchOptimizer
+        } else {
+            self.batchOptimizer = await MetalBatchOptimizer(device: device, profiler: profiler)
+        }
     }
     
     // MARK: - Matrix Multiplication
@@ -85,14 +101,25 @@ public actor MetalMatrixCompute {
         return result
     }
     
-    /// Batch matrix multiplication for multiple matrix pairs
+    /// Batch matrix multiplication for multiple matrix pairs with optimized GPU utilization
     public func batchMatrixMultiply(
         pairs: [(matrixA: [[Float]], matrixB: [[Float]])]
     ) async throws -> [[[Float]]] {
         
         let startTime = CFAbsoluteTimeGetCurrent()
         
-        // For GPU efficiency, batch similar-sized operations
+        // Get optimal batch configuration
+        let avgMatrixSize = pairs.map { $0.matrixA.count * $0.matrixA[0].count }.reduce(0, +) / pairs.count
+        let batchConfig = await batchOptimizer.getOptimalBatchSize(
+            operation: .matrixMultiplication,
+            dataType: .float32,
+            vectorDimension: avgMatrixSize,
+            totalElements: pairs.count
+        )
+        
+        logger.debug("Using batch size: \(batchConfig.batchSize) for \(pairs.count) matrix operations")
+        
+        // Group similar-sized operations for GPU efficiency
         let groupedPairs = pairs.enumerated().sorted { lhs, rhs in
             let lhsSize = lhs.element.matrixA.count * lhs.element.matrixA[0].count
             let rhsSize = rhs.element.matrixA.count * rhs.element.matrixA[0].count
@@ -101,32 +128,43 @@ public actor MetalMatrixCompute {
         
         var results = Array(repeating: [[Float]](), count: pairs.count)
         
-        // Process in batches for better GPU utilization
-        let batchSize = 4 // Process 4 matrix multiplications at a time
-        for batchStart in stride(from: 0, to: groupedPairs.count, by: batchSize) {
-            let batchEnd = min(batchStart + batchSize, groupedPairs.count)
-            let batch = groupedPairs[batchStart..<batchEnd]
-            
-            // Process batch concurrently
-            try await withThrowingTaskGroup(of: (Int, [[Float]]).self) { group in
-                for (originalIndex, pair) in batch {
-                    group.addTask {
-                        let result = try await self.matrixMultiply(
-                            matrixA: pair.matrixA,
-                            matrixB: pair.matrixB
-                        )
-                        return (originalIndex, result)
-                    }
-                }
+        // Use optimized batch processing with double buffering if available
+        if batchConfig.useDoubleBUffering && pairs.count > batchConfig.batchSize {
+            results = try await batchMatrixMultiplyWithDoubleBuffering(
+                groupedPairs: groupedPairs,
+                batchConfig: batchConfig
+            )
+        } else {
+            // Standard batch processing
+            for batchStart in stride(from: 0, to: groupedPairs.count, by: batchConfig.batchSize) {
+                let batchEnd = min(batchStart + batchConfig.batchSize, groupedPairs.count)
+                let batch = groupedPairs[batchStart..<batchEnd]
                 
-                for try await (index, result) in group {
-                    results[index] = result
-                }
+                // Process batch using fused operations
+                try await processBatchFused(batch: Array(batch), results: &results)
             }
         }
         
         let duration = CFAbsoluteTimeGetCurrent() - startTime
-        logger.debug("Batch matrix multiply completed: \(pairs.count) operations in \(duration)s")
+        let throughput = Double(pairs.count) / duration
+        
+        // Record performance metrics
+        await batchOptimizer.recordBatchPerformance(
+            operation: .matrixMultiplication,
+            dataType: .float32,
+            vectorDimension: avgMatrixSize,
+            batchSize: batchConfig.batchSize,
+            executionTime: duration,
+            throughput: throughput
+        )
+        
+        await profiler?.recordOperation(
+            .matrixMultiplication,
+            duration: duration,
+            dataSize: pairs.count
+        )
+        
+        logger.debug("Batch matrix multiply completed: \(pairs.count) operations in \(duration)s (\(throughput) ops/sec)")
         
         return results
     }
@@ -182,12 +220,10 @@ public actor MetalMatrixCompute {
         // Get pipeline
         let pipeline = try await pipelineManager.getPipeline(functionName: "matrixRowSum")
         
-        // Create command buffer
-        guard let commandBuffer = await device.makeCommandBuffer() else {
-            throw MetalMatrixError.commandBufferCreationFailed
-        }
+        // Get command buffer from pool
+        let commandBuffer = try await commandBufferPool.getCommandBuffer(label: "MatrixRowSum")
         
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+        guard let encoder = commandBuffer.buffer.makeComputeCommandEncoder() else {
             throw MetalMatrixError.commandBufferCreationFailed
         }
         
@@ -427,12 +463,10 @@ public actor MetalMatrixCompute {
         // Get pipeline state
         let pipeline = try await pipelineManager.getPipeline(functionName: "tiledMatrixMultiply")
         
-        // Create command buffer
-        guard let commandBuffer = await device.makeCommandBuffer() else {
-            throw MetalMatrixError.commandBufferCreationFailed
-        }
+        // Get command buffer from pool
+        let commandBuffer = try await commandBufferPool.getCommandBuffer(label: "MatrixRowSum")
         
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+        guard let encoder = commandBuffer.buffer.makeComputeCommandEncoder() else {
             throw MetalMatrixError.commandBufferCreationFailed
         }
         
@@ -493,12 +527,10 @@ public actor MetalMatrixCompute {
         // Get pipeline state
         let pipeline = try await pipelineManager.getPipeline(functionName: "matrixTransposeCoalesced")
         
-        // Create command buffer
-        guard let commandBuffer = await device.makeCommandBuffer() else {
-            throw MetalMatrixError.commandBufferCreationFailed
-        }
+        // Get command buffer from pool
+        let commandBuffer = try await commandBufferPool.getCommandBuffer(label: "MatrixRowSum")
         
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+        guard let encoder = commandBuffer.buffer.makeComputeCommandEncoder() else {
             throw MetalMatrixError.commandBufferCreationFailed
         }
         
@@ -595,12 +627,10 @@ public actor MetalMatrixCompute {
         
         let pipeline = try await pipelineManager.getPipeline(functionName: pipelineName)
         
-        // Create command buffer
-        guard let commandBuffer = await device.makeCommandBuffer() else {
-            throw MetalMatrixError.commandBufferCreationFailed
-        }
+        // Get command buffer from pool
+        let commandBuffer = try await commandBufferPool.getCommandBuffer(label: "MatrixRowSum")
         
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+        guard let encoder = commandBuffer.buffer.makeComputeCommandEncoder() else {
             throw MetalMatrixError.commandBufferCreationFailed
         }
         
@@ -647,6 +677,102 @@ public actor MetalMatrixCompute {
                 resultArray[row * cols + col]
             }
         }
+    }
+    
+    // MARK: - Optimized Batch Processing
+    
+    private func batchMatrixMultiplyWithDoubleBuffering(
+        groupedPairs: [(offset: Int, element: (matrixA: [[Float]], matrixB: [[Float]]))],
+        batchConfig: BatchConfiguration
+    ) async throws -> [[[Float]]] {
+        
+        var results = Array(repeating: [[Float]](), count: groupedPairs.count)
+        let batchSize = batchConfig.batchSize
+        
+        // Create double buffer setup
+        var currentBatch: [(Int, (matrixA: [[Float]], matrixB: [[Float]]))] = []
+        var nextBatch: [(Int, (matrixA: [[Float]], matrixB: [[Float]]))] = []
+        
+        for batchStart in stride(from: 0, to: groupedPairs.count, by: batchSize) {
+            let batchEnd = min(batchStart + batchSize, groupedPairs.count)
+            
+            // Prepare next batch while processing current
+            if batchStart > 0 {
+                // Process current batch
+                try await processBatchFused(batch: currentBatch, results: &results)
+            }
+            
+            // Swap buffers
+            swap(&currentBatch, &nextBatch)
+            
+            // Load next batch
+            currentBatch = Array(groupedPairs[batchStart..<batchEnd])
+        }
+        
+        // Process final batch
+        if !currentBatch.isEmpty {
+            try await processBatchFused(batch: currentBatch, results: &results)
+        }
+        
+        return results
+    }
+    
+    private func processBatchFused(
+        batch: [(offset: Int, element: (matrixA: [[Float]], matrixB: [[Float]]))],
+        results: inout [[[Float]]]
+    ) async throws {
+        
+        // Process batch with minimal GPU synchronization
+        try await withThrowingTaskGroup(of: (Int, [[Float]]).self) { group in
+            // Use a single command buffer for the entire batch if possible
+            let shouldFuse = batch.allSatisfy { pair in
+                pair.element.matrixA.count == batch[0].element.matrixA.count &&
+                pair.element.matrixA[0].count == batch[0].element.matrixA[0].count &&
+                pair.element.matrixB[0].count == batch[0].element.matrixB[0].count
+            }
+            
+            if shouldFuse && batch.count > 1 {
+                // Fused batch processing
+                let fusedResults = try await matrixMultiplyFused(batch: batch)
+                for (idx, (originalIndex, _)) in batch.enumerated() {
+                    results[originalIndex] = fusedResults[idx]
+                }
+            } else {
+                // Individual processing
+                for (originalIndex, pair) in batch {
+                    group.addTask {
+                        let result = try await self.matrixMultiply(
+                            matrixA: pair.matrixA,
+                            matrixB: pair.matrixB
+                        )
+                        return (originalIndex, result)
+                    }
+                }
+                
+                for try await (index, result) in group {
+                    results[index] = result
+                }
+            }
+        }
+    }
+    
+    private func matrixMultiplyFused(
+        batch: [(offset: Int, element: (matrixA: [[Float]], matrixB: [[Float]]))]
+    ) async throws -> [[[Float]]] {
+        
+        // This would implement a fused matrix multiplication kernel
+        // that processes multiple matrix pairs in a single GPU dispatch
+        // For now, fall back to individual processing
+        
+        var results: [[[Float]]] = []
+        for (_, pair) in batch {
+            let result = try await matrixMultiply(
+                matrixA: pair.matrixA,
+                matrixB: pair.matrixB
+            )
+            results.append(result)
+        }
+        return results
     }
     
     // MARK: - CPU Fallbacks

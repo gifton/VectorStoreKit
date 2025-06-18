@@ -307,7 +307,7 @@ where Vector.Scalar: BinaryFloatingPoint {
         case .binary:
             return try PropertyListEncoder().encode(exportData)
         default:
-            throw ExportError.unsupportedFormat(format)
+            throw IVFExportError.unsupportedFormat(format)
         }
     }
     
@@ -642,7 +642,7 @@ enum ImportError: LocalizedError {
     case unsupportedFormat(ExportFormat)
 }
 
-enum ExportError: LocalizedError {
+enum IVFExportError: LocalizedError {
     case unsupportedFormat(ExportFormat)
 }
 

@@ -23,6 +23,17 @@ public actor MetalProfiler {
     // Hardware metrics
     private var lastHardwareMetrics: [String: Float] = [:]
     
+    // GPU-specific metrics
+    private var commandBufferPoolHits: Int = 0
+    private var commandBufferPoolMisses: Int = 0
+    private var totalGPUMemoryAllocated: Int = 0
+    private var currentGPUMemoryUsage: Int = 0
+    private var peakGPUMemoryUsage: Int = 0
+    private var kernelDispatches: Int = 0
+    private var totalThreadsDispatched: Int = 0
+    private var kernelExecutionCounts: [String: Int] = [:]
+    private var commandBufferSubmissions: Int = 0
+    
     private let logger = Logger(subsystem: "VectorStoreKit", category: "MetalProfiler")
     
     // MARK: - Operation Types
@@ -35,6 +46,17 @@ public actor MetalProfiler {
         case bufferTransfer = "transfer"
         case pipelineCompilation = "compilation"
         case optimization = "optimization"
+        case commandBufferSubmission = "commandBuffer"
+        case kernelExecution = "kernel"
+    }
+    
+    public enum ProfileEvent {
+        case commandBufferPoolHit
+        case commandBufferPoolMiss
+        case gpuMemoryAllocation(size: Int)
+        case gpuMemoryDeallocation(size: Int)
+        case kernelDispatch(name: String, threads: Int)
+        case pipelineCreation(name: String)
     }
     
     // MARK: - Initialization
@@ -92,6 +114,30 @@ public actor MetalProfiler {
         lastHardwareMetrics = metrics
     }
     
+    /// Record a profiling event
+    public func recordEvent(_ event: ProfileEvent) {
+        guard enabled else { return }
+        
+        switch event {
+        case .commandBufferPoolHit:
+            commandBufferPoolHits += 1
+        case .commandBufferPoolMiss:
+            commandBufferPoolMisses += 1
+        case .gpuMemoryAllocation(let size):
+            totalGPUMemoryAllocated += size
+            currentGPUMemoryUsage += size
+            peakGPUMemoryUsage = max(peakGPUMemoryUsage, currentGPUMemoryUsage)
+        case .gpuMemoryDeallocation(let size):
+            currentGPUMemoryUsage = max(0, currentGPUMemoryUsage - size)
+        case .kernelDispatch(let name, let threads):
+            kernelDispatches += 1
+            totalThreadsDispatched += threads
+            kernelExecutionCounts[name, default: 0] += 1
+        case .pipelineCreation(let name):
+            logger.debug("Pipeline created: \(name)")
+        }
+    }
+    
     // MARK: - Statistics
     
     /// Get overall performance statistics
@@ -100,6 +146,19 @@ public actor MetalProfiler {
             grouping: operationHistory,
             by: { $0.type }
         ).mapValues { $0.count }
+        
+        // Calculate GPU-specific metrics
+        let totalCommandBuffers = commandBufferPoolHits + commandBufferPoolMisses
+        let commandBufferPoolHitRate = totalCommandBuffers > 0 ?
+            Float(commandBufferPoolHits) / Float(totalCommandBuffers) : 0
+        
+        let avgThreadsPerDispatch = kernelDispatches > 0 ?
+            totalThreadsDispatched / kernelDispatches : 0
+        
+        let topKernels = kernelExecutionCounts
+            .sorted { $0.value > $1.value }
+            .prefix(5)
+            .map { ($0.key, $0.value) }
         
         return ProfilerStatistics(
             totalOperations: totalOperations,
@@ -110,7 +169,17 @@ public actor MetalProfiler {
             latencyPercentiles: calculatePercentiles(latencyHistory),
             averageMemoryBandwidth: average(bandwidthHistory),
             peakMemoryBandwidth: bandwidthHistory.max() ?? 0,
-            hardwareMetrics: lastHardwareMetrics
+            hardwareMetrics: lastHardwareMetrics,
+            gpuMetrics: GPUSpecificMetrics(
+                commandBufferPoolHitRate: commandBufferPoolHitRate,
+                totalGPUMemoryAllocated: totalGPUMemoryAllocated,
+                peakGPUMemoryUsage: peakGPUMemoryUsage,
+                currentGPUMemoryUsage: currentGPUMemoryUsage,
+                kernelDispatches: kernelDispatches,
+                averageThreadsPerDispatch: avgThreadsPerDispatch,
+                topKernels: topKernels,
+                commandBufferSubmissions: commandBufferSubmissions
+            )
         )
     }
     
@@ -176,6 +245,17 @@ public actor MetalProfiler {
         latencyHistory.removeAll()
         bandwidthHistory.removeAll()
         lastHardwareMetrics.removeAll()
+        
+        // Reset GPU metrics
+        commandBufferPoolHits = 0
+        commandBufferPoolMisses = 0
+        totalGPUMemoryAllocated = 0
+        currentGPUMemoryUsage = 0
+        peakGPUMemoryUsage = 0
+        kernelDispatches = 0
+        totalThreadsDispatched = 0
+        kernelExecutionCounts.removeAll()
+        commandBufferSubmissions = 0
         
         logger.info("Profiler reset")
     }
@@ -256,6 +336,18 @@ private struct OperationRecord {
     let memoryBandwidth: Float
 }
 
+/// GPU-specific metrics
+public struct GPUSpecificMetrics: Sendable {
+    public let commandBufferPoolHitRate: Float
+    public let totalGPUMemoryAllocated: Int
+    public let peakGPUMemoryUsage: Int
+    public let currentGPUMemoryUsage: Int
+    public let kernelDispatches: Int
+    public let averageThreadsPerDispatch: Int
+    public let topKernels: [(name: String, count: Int)]
+    public let commandBufferSubmissions: Int
+}
+
 /// Profiler performance statistics
 public struct ProfilerStatistics: Sendable {
     public let totalOperations: UInt64
@@ -267,6 +359,7 @@ public struct ProfilerStatistics: Sendable {
     public let averageMemoryBandwidth: Float
     public let peakMemoryBandwidth: Float
     public let hardwareMetrics: [String: Float]
+    public let gpuMetrics: GPUSpecificMetrics
 }
 
 /// Metrics for a specific operation type

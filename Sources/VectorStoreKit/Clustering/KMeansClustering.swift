@@ -263,8 +263,8 @@ public actor KMeansClustering {
         vectors: [[Float]],
         centroids: [[Float]]
     ) async throws -> (assignments: [Int], distances: [Float]) {
-        // Metal acceleration temporarily disabled due to API mismatch
-        // TODO: Update to use batch distance computation when available
+        // For now, use CPU computation for array-based vectors
+        // TODO: Add support for converting arrays to SIMD vectors when dimensions match
         return assignWithCPU(vectors: vectors, centroids: centroids)
     }
     

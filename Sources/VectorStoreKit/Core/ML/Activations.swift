@@ -1,172 +1,352 @@
 // VectorStoreKit: ML Activation Functions
 //
-// Comprehensive activation functions for neural networks with derivatives
+// Metal-accelerated activation functions for neural networks
+//
 
 import Foundation
-import Accelerate
+@preconcurrency import Metal
 
 /// Activation functions for neural networks
-public enum Activation: String, Codable, Sendable, CaseIterable {
-    case linear
-    case relu
-    case leakyRelu
-    case sigmoid
-    case tanh
-    case softmax
-    case elu
-    case selu
-    case gelu
-    case swish
+public enum ActivationType: String, Codable, Sendable, CaseIterable {
+    case linear = "linear"
+    case relu = "relu"
+    case leakyRelu = "leakyRelu"
+    case sigmoid = "sigmoid"
+    case tanh = "tanh"
+    case softmax = "softmax"
+    case gelu = "gelu"
+    case swish = "swish"
+    case elu = "elu"
+    case mish = "mish"
     
-    /// Apply activation function to input
-    public func apply(_ input: [Float]) -> [Float] {
+    /// Default parameter values for parametric activations
+    public var defaultParameter: Float {
         switch self {
-        case .linear:
-            return input
-            
-        case .relu:
-            return vDSP.threshold(input, to: 0, with: .zeroFill)
-            
         case .leakyRelu:
-            return input.map { $0 > 0 ? $0 : 0.01 * $0 }
-            
-        case .sigmoid:
-            return input.map { 1.0 / (1.0 + exp(-$0)) }
-            
-        case .tanh:
-            return input.map { Foundation.tanh($0) }
-            
-        case .softmax:
-            let maxVal = input.max() ?? 0
-            let expValues = input.map { exp($0 - maxVal) }
-            let sum = expValues.reduce(0, +)
-            return expValues.map { $0 / sum }
-            
+            return 0.01  // alpha
         case .elu:
-            let alpha: Float = 1.0
-            return input.map { $0 > 0 ? $0 : alpha * (exp($0) - 1) }
-            
-        case .selu:
-            let alpha: Float = 1.6732632423543772848170429916717
-            let scale: Float = 1.0507009873554804934193349852946
-            return input.map { scale * ($0 > 0 ? $0 : alpha * (exp($0) - 1)) }
-            
-        case .gelu:
-            // Gaussian Error Linear Unit approximation
-            return input.map { x in
-                0.5 * x * (1 + Foundation.tanh(sqrt(2 / Float.pi) * (x + 0.044715 * pow(x, 3))))
-            }
-            
-        case .swish:
-            return zip(input, apply(input, activation: .sigmoid)).map { $0 * $1 }
+            return 1.0   // alpha
+        default:
+            return 0.0
         }
     }
     
-    /// Compute derivative of activation function
-    public func derivative(_ input: [Float], output: [Float]? = nil) -> [Float] {
+    /// Whether this activation has learnable parameters
+    public var hasParameters: Bool {
         switch self {
-        case .linear:
-            return Array(repeating: 1.0, count: input.count)
-            
-        case .relu:
-            return input.map { $0 > 0 ? 1.0 : 0.0 }
-            
-        case .leakyRelu:
-            return input.map { $0 > 0 ? 1.0 : 0.01 }
-            
-        case .sigmoid:
-            let sig = output ?? apply(input)
-            return zip(sig, sig).map { $0 * (1 - $1) }
-            
-        case .tanh:
-            let tanh_out = output ?? apply(input)
-            return tanh_out.map { 1 - $0 * $0 }
-            
-        case .softmax:
-            // For softmax, derivative is computed differently in loss function
-            return Array(repeating: 1.0, count: input.count)
-            
-        case .elu:
-            let alpha: Float = 1.0
-            return input.map { $0 > 0 ? 1.0 : alpha * exp($0) }
-            
-        case .selu:
-            let alpha: Float = 1.6732632423543772848170429916717
-            let scale: Float = 1.0507009873554804934193349852946
-            return input.map { $0 > 0 ? scale : scale * alpha * exp($0) }
-            
-        case .gelu:
-            // GELU derivative approximation
-            return input.map { x in
-                let tanh_arg = sqrt(2 / Float.pi) * (x + 0.044715 * pow(x, 3))
-                let tanh_val = Foundation.tanh(tanh_arg)
-                let sech2 = 1 - tanh_val * tanh_val
-                return 0.5 * (1 + tanh_val) + 0.5 * x * sech2 * sqrt(2 / Float.pi) * (1 + 0.134145 * x * x)
-            }
-            
-        case .swish:
-            let sig = apply(input, activation: .sigmoid)
-            return zip(input, sig).map { x, s in s * (1 + x * (1 - s)) }
+        case .leakyRelu, .elu:
+            return true
+        default:
+            return false
         }
     }
     
-    /// Helper method for internal use
-    private func apply(_ input: [Float], activation: Activation) -> [Float] {
-        activation.apply(input)
+    /// Metal shader function name for forward pass
+    public var forwardFunctionName: String {
+        switch self {
+        case .linear:
+            return "linear_forward"
+        case .relu:
+            return "relu_forward"
+        case .leakyRelu:
+            return "leaky_relu_forward"
+        case .sigmoid:
+            return "sigmoid_forward"
+        case .tanh:
+            return "tanh_forward"
+        case .softmax:
+            return "softmax_forward"
+        case .gelu:
+            return "gelu_forward"
+        case .swish:
+            return "swish_forward"
+        case .elu:
+            return "elu_forward"
+        case .mish:
+            return "mish_forward"
+        }
+    }
+    
+    /// Metal shader function name for backward pass
+    public var backwardFunctionName: String {
+        switch self {
+        case .linear:
+            return "linear_backward"
+        case .relu:
+            return "relu_backward"
+        case .leakyRelu:
+            return "leaky_relu_backward"
+        case .sigmoid:
+            return "sigmoid_backward"
+        case .tanh:
+            return "tanh_backward"
+        case .softmax:
+            return "softmax_backward"
+        case .gelu:
+            return "gelu_backward"
+        case .swish:
+            return "swish_backward"
+        case .elu:
+            return "elu_backward"
+        case .mish:
+            return "mish_backward"
+        }
     }
 }
 
-/// Activation function utilities
-public struct ActivationUtils {
+/// Metal-accelerated activation layer
+public actor ActivationLayer: NeuralLayer {
+    public let activation: ActivationType
+    private let metalPipeline: MetalMLPipeline
+    public var parameter: Float
+    private var lastInput: MetalBuffer?
+    private var lastOutput: MetalBuffer?
+    private var isTraining: Bool = true
     
-    /// Apply activation function with Metal acceleration if available
-    public static func applyActivation(
-        _ input: [Float],
-        activation: Activation,
-        metalCompute: MetalCompute? = nil
-    ) async -> [Float] {
-        // For now, use CPU implementation
-        // Metal acceleration can be added later
-        return activation.apply(input)
-    }
+    // Cached pipelines
+    private var forwardPipeline: MTLComputePipelineState?
+    private var backwardPipeline: MTLComputePipelineState?
     
-    /// Batch apply activation to multiple inputs
-    public static func batchApply(
-        _ inputs: [[Float]],
-        activation: Activation
-    ) -> [[Float]] {
-        inputs.map { activation.apply($0) }
-    }
-    
-    /// Compute Jacobian matrix for activation function
-    public static func jacobian(
-        _ input: [Float],
-        activation: Activation
-    ) -> [[Float]] {
-        let n = input.count
-        var jacobian = Array(repeating: Array(repeating: Float(0), count: n), count: n)
+    public init(
+        activation: ActivationType,
+        parameter: Float? = nil,
+        metalPipeline: MetalMLPipeline
+    ) async throws {
+        self.activation = activation
+        self.metalPipeline = metalPipeline
+        self.parameter = parameter ?? activation.defaultParameter
         
-        switch activation {
-        case .softmax:
-            let output = activation.apply(input)
-            for i in 0..<n {
-                for j in 0..<n {
-                    if i == j {
-                        jacobian[i][j] = output[i] * (1 - output[i])
-                    } else {
-                        jacobian[i][j] = -output[i] * output[j]
-                    }
-                }
-            }
-            
-        default:
-            // For element-wise activations, Jacobian is diagonal
-            let derivatives = activation.derivative(input)
-            for i in 0..<n {
-                jacobian[i][i] = derivatives[i]
-            }
+        // Load pipelines
+        try await loadPipelines()
+    }
+    
+    // MARK: - NeuralLayer Protocol
+    
+    public func forward(_ input: MetalBuffer) async throws -> MetalBuffer {
+        guard let pipeline = forwardPipeline else {
+            throw ActivationError.pipelineNotLoaded
         }
         
-        return jacobian
+        // Store for backward pass
+        if isTraining {
+            lastInput = input
+        }
+        
+        // Allocate output buffer
+        let output = try await metalPipeline.allocateBuffer(shape: input.shape)
+        
+        // Execute forward pass
+        let commandQueue = await metalPipeline.getMetalCommandQueue()
+        
+        try await commandQueue.execute { commandBuffer in
+            guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+                throw MetalMLError.encoderCreationFailed
+            }
+            
+            encoder.setComputePipelineState(pipeline)
+            encoder.setBuffer(input.buffer, offset: 0, index: 0)
+            encoder.setBuffer(output.buffer, offset: 0, index: 1)
+            
+            var size = UInt32(input.count)
+            encoder.setBytes(&size, length: MemoryLayout<UInt32>.size, index: 2)
+            
+            // Set parameters for parametric activations
+            if activation.hasParameters {
+                var param = parameter
+                encoder.setBytes(&param, length: MemoryLayout<Float>.size, index: 3)
+            }
+            
+            // Special handling for softmax (needs threadgroup memory)
+            if activation == .softmax {
+                let threadsPerThreadgroup = min(256, pipeline.maxTotalThreadsPerThreadgroup)
+                let threadgroupMemoryLength = threadsPerThreadgroup * MemoryLayout<Float>.size * 2
+                encoder.setThreadgroupMemoryLength(threadgroupMemoryLength, index: 0)
+                
+                let threadgroups = MTLSize(width: 1, height: 1, depth: 1)
+                let threads = MTLSize(width: threadsPerThreadgroup, height: 1, depth: 1)
+                encoder.dispatchThreadgroups(threadgroups, threadsPerThreadgroup: threads)
+            } else {
+                // Standard dispatch for element-wise activations
+                let threadsPerThreadgroup = MTLSize(width: 256, height: 1, depth: 1)
+                let threadgroups = MTLSize(
+                    width: (input.count + 255) / 256,
+                    height: 1,
+                    depth: 1
+                )
+                encoder.dispatchThreadgroups(threadgroups, threadsPerThreadgroup: threadsPerThreadgroup)
+            }
+            
+            encoder.endEncoding()
+        }
+        
+        // Store for backward pass
+        if isTraining {
+            lastOutput = output
+        }
+        
+        return output
+    }
+    
+    public func backward(_ gradOutput: MetalBuffer) async throws -> MetalBuffer {
+        guard let pipeline = backwardPipeline,
+              let input = lastInput else {
+            throw ActivationError.backwardBeforeForward
+        }
+        
+        // Allocate gradient input buffer
+        let gradInput = try await metalPipeline.allocateBuffer(shape: input.shape)
+        
+        // Execute backward pass
+        let commandQueue = await metalPipeline.getMetalCommandQueue()
+        
+        try await commandQueue.execute { commandBuffer in
+            guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+                throw MetalMLError.encoderCreationFailed
+            }
+            
+            encoder.setComputePipelineState(pipeline)
+            encoder.setBuffer(gradOutput.buffer, offset: 0, index: 0)
+            
+            // Different buffer layouts for different activations
+            switch activation {
+            case .sigmoid, .tanh, .elu:
+                // These need the output from forward pass
+                guard let output = lastOutput else {
+                    throw ActivationError.backwardBeforeForward
+                }
+                encoder.setBuffer(output.buffer, offset: 0, index: 1)
+                encoder.setBuffer(gradInput.buffer, offset: 0, index: 2)
+                
+            case .swish:
+                // Swish needs both input and output
+                guard let output = lastOutput else {
+                    throw ActivationError.backwardBeforeForward
+                }
+                encoder.setBuffer(input.buffer, offset: 0, index: 1)
+                encoder.setBuffer(output.buffer, offset: 0, index: 2)
+                encoder.setBuffer(gradInput.buffer, offset: 0, index: 3)
+                
+            default:
+                // Most activations just need input
+                encoder.setBuffer(input.buffer, offset: 0, index: 1)
+                encoder.setBuffer(gradInput.buffer, offset: 0, index: 2)
+            }
+            
+            var size = UInt32(input.count)
+            let sizeIndex = activation == .swish ? 4 : 3
+            encoder.setBytes(&size, length: MemoryLayout<UInt32>.size, index: sizeIndex)
+            
+            // Set parameters for parametric activations
+            if activation.hasParameters {
+                var param = parameter
+                let paramIndex = sizeIndex + 1
+                encoder.setBytes(&param, length: MemoryLayout<Float>.size, index: paramIndex)
+            }
+            
+            // Dispatch
+            let threadsPerThreadgroup = MTLSize(width: 256, height: 1, depth: 1)
+            let threadgroups = MTLSize(
+                width: (input.count + 255) / 256,
+                height: 1,
+                depth: 1
+            )
+            encoder.dispatchThreadgroups(threadgroups, threadsPerThreadgroup: threadsPerThreadgroup)
+            encoder.endEncoding()
+        }
+        
+        return gradInput
+    }
+    
+    public func updateParameters(_ gradients: MetalBuffer, learningRate: Float) async throws {
+        // Most activations don't have parameters to update
+        // For parametric activations, this would update the parameter
+        if activation.hasParameters {
+            // In a full implementation, we'd accumulate gradients for the parameter
+            // and update it here
+        }
+    }
+    
+    public func getParameters() async -> MetalBuffer? {
+        if activation.hasParameters {
+            // Return parameter as a 1-element buffer
+            let buffer = try? await metalPipeline.allocateBuffer(size: 1)
+            if let buffer = buffer {
+                let ptr = buffer.buffer.contents().bindMemory(to: Float.self, capacity: 1)
+                ptr[0] = parameter
+                return buffer
+            }
+        }
+        return nil
+    }
+    
+    public func getParameterCount() async -> Int {
+        activation.hasParameters ? 1 : 0
+    }
+    
+    public func setTraining(_ training: Bool) {
+        isTraining = training
+    }
+    
+    public func zeroGradients() async {
+        // Activation layers typically don't accumulate gradients
+        // This is a no-op for most activations
+    }
+    
+    public func scaleGradients(_ scale: Float) async {
+        // Activation layers typically don't store gradients
+        // This is a no-op for most activations
+    }
+    
+    public func updateParametersWithOptimizer(_ optimizer: any Optimizer) async throws {
+        // Most activations don't have parameters
+        // For parametric activations, we would update the parameter here
+        if activation.hasParameters {
+            // In a full implementation with gradient tracking, we would:
+            // 1. Get accumulated parameter gradients
+            // 2. Apply optimizer update rule
+            // 3. Update the parameter value
+            // For now, this is a placeholder
+        }
+    }
+    
+    // MARK: - Private Methods
+    
+    private func loadPipelines() async throws {
+        let library = await metalPipeline.getShaderLibrary()
+        
+        // Load forward pipeline
+        forwardPipeline = try await library.makeComputePipeline(
+            functionName: activation.forwardFunctionName
+        )
+        
+        // Load backward pipeline
+        backwardPipeline = try await library.makeComputePipeline(
+            functionName: activation.backwardFunctionName
+        )
     }
 }
+
+
+// MARK: - Errors
+
+public enum ActivationError: LocalizedError {
+    case pipelineNotLoaded
+    case backwardBeforeForward
+    case unsupportedActivation(String)
+    
+    public var errorDescription: String? {
+        switch self {
+        case .pipelineNotLoaded:
+            return "Metal pipeline not loaded for activation"
+        case .backwardBeforeForward:
+            return "Backward pass called before forward pass"
+        case .unsupportedActivation(let name):
+            return "Unsupported activation function: \(name)"
+        }
+    }
+}
+
+// MARK: - Compatibility
+
+/// Compatibility typealias
+public typealias Activation = ActivationType

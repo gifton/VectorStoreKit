@@ -1,0 +1,164 @@
+name: Architecture Validation
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Run daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+jobs:
+  validate:
+    name: Validate Architecture
+    runs-on: macos-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      
+    - name: Setup Swift
+      uses: swift-actions/setup-swift@v1
+      with:
+        swift-version: '5.9'
+        
+    - name: Cache Swift packages
+      uses: actions/cache@v3
+      with:
+        path: .build
+        key: ${{ runner.os }}-spm-${{ hashFiles('Package.resolved') }}
+        restore-keys: |
+          ${{ runner.os }}-spm-
+          
+    - name: Build package
+      run: swift build
+      
+    - name: Run architecture validation
+      id: validation
+      run: |
+        swift run VectorStoreValidation --junit --output validation-report.xml
+      continue-on-error: true
+      
+    - name: Upload validation report
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: validation-report
+        path: validation-report.xml
+        
+    - name: Publish test results
+      uses: EnricoMi/publish-unit-test-result-action/composite@v2
+      if: always()
+      with:
+        files: validation-report.xml
+        check_name: Architecture Validation Results
+        
+    - name: Generate markdown report
+      if: always()
+      run: |
+        swift run VectorStoreValidation --output validation-report.md
+        
+    - name: Comment PR with validation results
+      if: github.event_name == 'pull_request' && always()
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const fs = require('fs');
+          const report = fs.readFileSync('validation-report.md', 'utf8');
+          
+          // Find existing comment
+          const { data: comments } = await github.rest.issues.listComments({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+          });
+          
+          const botComment = comments.find(comment => 
+            comment.user.type === 'Bot' && 
+            comment.body.includes('VectorStoreKit Validation Report')
+          );
+          
+          const body = `## 🔍 Architecture Validation Results\n\n${report}`;
+          
+          if (botComment) {
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: botComment.id,
+              body: body
+            });
+          } else {
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });
+          }
+          
+    - name: Check validation status
+      if: steps.validation.outcome == 'failure'
+      run: |
+        echo "❌ Architecture validation failed!"
+        exit 1
+
+  performance-baseline:
+    name: Update Performance Baselines
+    runs-on: macos-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      
+    - name: Setup Swift
+      uses: swift-actions/setup-swift@v1
+      with:
+        swift-version: '5.9'
+        
+    - name: Run performance benchmarks
+      run: |
+        swift build -c release
+        swift run -c release VectorStoreKitBenchmark --save-baseline
+        
+    - name: Commit baseline updates
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add performance-baselines.json
+        git diff --staged --quiet || git commit -m "Update performance baselines"
+        
+    - name: Push changes
+      uses: ad-m/github-push-action@master
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        branch: ${{ github.ref }}
+
+  validate-categories:
+    name: Validate ${{ matrix.category }}
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        category: [api, performance, memory, threadSafety, documentation, naming]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      
+    - name: Setup Swift
+      uses: swift-actions/setup-swift@v1
+      with:
+        swift-version: '5.9'
+        
+    - name: Run validation for ${{ matrix.category }}
+      run: |
+        swift run VectorStoreValidation --category ${{ matrix.category }} --output ${{ matrix.category }}-report.md
+        
+    - name: Upload category report
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: ${{ matrix.category }}-report
+        path: ${{ matrix.category }}-report.md

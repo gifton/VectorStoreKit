@@ -17,6 +17,7 @@ DerivedData/
 *.log
 build/
 .build/
+*.air
 
 # IDE
 .vscode/

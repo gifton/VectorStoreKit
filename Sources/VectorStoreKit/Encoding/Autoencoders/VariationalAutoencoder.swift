@@ -378,7 +378,7 @@ public actor VariationalAutoencoder: Autoencoder {
             )
             
             // Compute individual losses for monitoring
-            let reconLoss = LossFunction.binaryCrossEntropy.compute(
+            let reconLoss = LossFunction.mse.compute(
                 prediction: reconstructed,
                 target: input
             )

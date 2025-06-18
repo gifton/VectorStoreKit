@@ -69,14 +69,31 @@ kernel void adam_update(
     // Update biased second raw moment estimate
     v[gid] = beta2 * v[gid] + (1.0f - beta2) * grad * grad;
     
-    // Compute bias-corrected first moment estimate
-    float mHat = m[gid] / (1.0f - pow(beta1, float(timestep)));
+    // Compute bias-corrected first moment estimate with numerical stability
+    float beta1_pow = pow(beta1, float(timestep));
+    if (isnan(beta1_pow) || isinf(beta1_pow)) beta1_pow = 0.0f;
+    float bias_correction1 = 1.0f - beta1_pow;
+    if (bias_correction1 < 1e-7f) bias_correction1 = 1e-7f;
+    float mHat = m[gid] / bias_correction1;
     
-    // Compute bias-corrected second raw moment estimate
-    float vHat = v[gid] / (1.0f - pow(beta2, float(timestep)));
+    // Compute bias-corrected second raw moment estimate with numerical stability
+    float beta2_pow = pow(beta2, float(timestep));
+    if (isnan(beta2_pow) || isinf(beta2_pow)) beta2_pow = 0.0f;
+    float bias_correction2 = 1.0f - beta2_pow;
+    if (bias_correction2 < 1e-7f) bias_correction2 = 1e-7f;
+    float vHat = v[gid] / bias_correction2;
     
-    // Update parameters
-    parameters[gid] -= learningRate * mHat / (sqrt(vHat) + epsilon);
+    // Update parameters with numerical stability
+    float denominator = sqrt(vHat) + epsilon;
+    if (denominator < 1e-7f) denominator = 1e-7f;
+    
+    // Check for NaN/Inf in gradient update
+    float update = learningRate * mHat / denominator;
+    if (isnan(update) || isinf(update)) {
+        update = 0.0f;
+    }
+    
+    parameters[gid] -= update;
 }
 
 // MARK: - RMSprop Optimizer
@@ -99,8 +116,17 @@ kernel void rmsprop_update(
     // Update squared gradient average
     squaredGradAvg[gid] = decay * squaredGradAvg[gid] + (1.0f - decay) * grad * grad;
     
-    // Update parameters
-    parameters[gid] -= learningRate * grad / (sqrt(squaredGradAvg[gid]) + epsilon);
+    // Update parameters with numerical stability
+    float denominator = sqrt(squaredGradAvg[gid]) + epsilon;
+    if (denominator < 1e-7f) denominator = 1e-7f;
+    
+    // Check for NaN/Inf in gradient update
+    float update = learningRate * grad / denominator;
+    if (isnan(update) || isinf(update)) {
+        update = 0.0f;
+    }
+    
+    parameters[gid] -= update;
 }
 
 // MARK: - AdaGrad Optimizer
@@ -122,8 +148,51 @@ kernel void adagrad_update(
     // Accumulate squared gradients
     accumulatedGrad[gid] += grad * grad;
     
-    // Update parameters
-    parameters[gid] -= learningRate * grad / (sqrt(accumulatedGrad[gid]) + epsilon);
+    // Update parameters with numerical stability
+    float denominator = sqrt(accumulatedGrad[gid]) + epsilon;
+    if (denominator < 1e-7f) denominator = 1e-7f;
+    
+    // Check for NaN/Inf in gradient update
+    float update = learningRate * grad / denominator;
+    if (isnan(update) || isinf(update)) {
+        update = 0.0f;
+    }
+    
+    parameters[gid] -= update;
+}
+
+// MARK: - Gradient Operations
+
+/// Zero gradients
+kernel void zero_gradients(
+    device float* gradients [[buffer(0)]],
+    constant uint& count [[buffer(1)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid >= count) return;
+    gradients[gid] = 0.0f;
+}
+
+/// Accumulate gradients (gradients += new_gradients)
+kernel void accumulate_gradients(
+    device float* gradients [[buffer(0)]],
+    constant float* new_gradients [[buffer(1)]],
+    constant uint& count [[buffer(2)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid >= count) return;
+    gradients[gid] += new_gradients[gid];
+}
+
+/// Scale gradients by a factor
+kernel void scale_gradients(
+    device float* gradients [[buffer(0)]],
+    constant float& scale [[buffer(1)]],
+    constant uint& count [[buffer(2)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid >= count) return;
+    gradients[gid] *= scale;
 }
 
 // MARK: - Gradient Clipping
@@ -139,7 +208,18 @@ kernel void clip_gradients_by_norm(
     if (gid >= count) return;
     
     if (globalNorm > maxNorm) {
-        gradients[gid] *= (maxNorm / globalNorm);
+        // Protect against division by zero
+        float divisor = globalNorm;
+        if (divisor < 1e-7f) divisor = 1e-7f;
+        
+        float scale = maxNorm / divisor;
+        
+        // Check for NaN/Inf
+        if (isnan(scale) || isinf(scale)) {
+            scale = 1.0f;
+        }
+        
+        gradients[gid] *= scale;
     }
 }
 

@@ -10,17 +10,52 @@ import simd
 /// Entry point for building vector stores using a fluent API
 ///
 /// VectorUniverse provides a type-safe, composable way to configure
-/// and instantiate vector stores with specific strategies.
+/// and instantiate vector stores with specific strategies. It uses a
+/// builder pattern to ensure all required components are configured
+/// before creating the final store.
+///
+/// ## Example
+/// ```swift
+/// let store = try await VectorUniverse<SIMD768<Float>, DocumentMetadata>()
+///     .indexing(HNSWIndexingStrategy(maxConnections: 32))
+///     .storage(HierarchicalResearchStorageStrategy())
+///     .caching(LRUCachingStrategy(maxMemory: 500_000_000))
+///     .materialize()
+/// ```
+///
+/// ## Quick Start Options
+/// ```swift
+/// // For rapid prototyping
+/// let store = try await VectorUniverse<SIMD128<Float>, MyMetadata>
+///     .quickStart()
+///     .materialize()
+///
+/// // For research applications
+/// let store = try await VectorUniverse<SIMD768<Float>, MyMetadata>
+///     .research()
+///     .materialize()
+/// ```
 public struct VectorUniverse<Vector: SIMD & Sendable, Metadata: Codable & Sendable> where Vector.Scalar: BinaryFloatingPoint {
     
     private let configuration: UniverseConfiguration
     
-    /// Create a new vector universe
+    /// Create a new vector universe with optional configuration
+    ///
+    /// - Parameter config: Universe configuration (uses defaults if not provided)
     public init(config: UniverseConfiguration = .init()) {
         self.configuration = config
     }
     
-    /// Configure indexing strategy
+    /// Configure the indexing strategy for vector search
+    ///
+    /// - Parameter strategy: The indexing strategy to use (HNSW, IVF, Hybrid, or Learned)
+    /// - Returns: An `IndexedUniverse` ready for storage configuration
+    ///
+    /// ## Available Strategies
+    /// - `HNSWIndexingStrategy`: High-performance approximate search
+    /// - `IVFIndexingStrategy`: Scalable inverted file index
+    /// - `HybridIndexingStrategy`: Adaptive multi-algorithm approach
+    /// - `LearnedIndexingStrategy`: ML-based learned index
     public func indexing<I: IndexingStrategy>(
         _ strategy: I
     ) -> IndexedUniverse<Vector, Metadata, I> 
@@ -186,6 +221,7 @@ public struct NoOpCachingStrategy<Vector: SIMD & Sendable>: CachingStrategy wher
 /// LRU caching strategy
 public struct LRUCachingStrategy<Vector: SIMD & Sendable>: CachingStrategy where Vector.Scalar: BinaryFloatingPoint {
     public typealias CacheType = BasicLRUVectorCache<Vector>
+    public typealias Config = LRUCacheConfiguration
     
     public let configuration: LRUCacheConfiguration?
     
@@ -194,13 +230,14 @@ public struct LRUCachingStrategy<Vector: SIMD & Sendable>: CachingStrategy where
     }
     
     public func createCache() async throws -> BasicLRUVectorCache<Vector> {
-        try BasicLRUVectorCache<Vector>(maxMemory: configuration?.maxMemory ?? 100_000_000)
+        return try BasicLRUVectorCache<Vector>(maxMemory: configuration?.maxMemory ?? 100_000_000)
     }
 }
 
 /// LFU caching strategy
 public struct LFUCachingStrategy<Vector: SIMD & Sendable>: CachingStrategy where Vector.Scalar: BinaryFloatingPoint {
     public typealias CacheType = BasicLFUVectorCache<Vector>
+    public typealias Config = LFUCacheConfiguration
     
     public let configuration: LFUCacheConfiguration?
     
@@ -209,12 +246,32 @@ public struct LFUCachingStrategy<Vector: SIMD & Sendable>: CachingStrategy where
     }
     
     public func createCache() async throws -> BasicLFUVectorCache<Vector> {
-        try BasicLFUVectorCache<Vector>(maxMemory: configuration?.maxMemory ?? 100_000_000)
+        return try BasicLFUVectorCache<Vector>(maxMemory: configuration?.maxMemory ?? 100_000_000)
+    }
+}
+
+/// FIFO caching strategy
+public struct FIFOCachingStrategy<Vector: SIMD & Sendable>: CachingStrategy where Vector.Scalar: BinaryFloatingPoint {
+    public typealias CacheType = BasicFIFOVectorCache<Vector>
+    public typealias Config = FIFOCacheConfiguration
+    
+    public let configuration: FIFOCacheConfiguration?
+    
+    public init(maxMemory: Int = 100_000_000) {
+        self.configuration = FIFOCacheConfiguration(maxMemory: maxMemory)
+    }
+    
+    public func createCache() async throws -> BasicFIFOVectorCache<Vector> {
+        return try BasicFIFOVectorCache<Vector>(maxMemory: configuration?.maxMemory ?? 100_000_000)
     }
 }
 
 
 // MARK: - Convenience Extensions
+
+// MARK: - Caching Strategy Configurations
+
+// Note: AdaptiveCachingStrategy removed - use LRU, LFU, or FIFO directly
 
 extension VectorUniverse {
     /// Quick setup with HNSW index, hierarchical storage, and LRU cache
@@ -229,7 +286,7 @@ extension VectorUniverse {
     }
     
     /// Research configuration with advanced features
-    public static func research() -> FullyConfiguredUniverse<Vector, Metadata, HNSWIndexingStrategy<Vector, Metadata>, HierarchicalResearchStorageStrategy, LFUCachingStrategy<Vector>> {
+    public static func research() -> FullyConfiguredUniverse<Vector, Metadata, HNSWIndexingStrategy<Vector, Metadata>, HierarchicalResearchStorageStrategy, LRUCachingStrategy<Vector>> {
         VectorUniverse<Vector, Metadata>()
             .indexing(HNSWIndexingStrategy<Vector, Metadata>(
                 maxConnections: 32,
@@ -248,6 +305,6 @@ extension VectorUniverse {
                     baseDirectory: FileManager.default.temporaryDirectory.appendingPathComponent("vectorstore/research")
                 )
             ))
-            .caching(LFUCachingStrategy(maxMemory: 500_000_000))
+            .caching(LRUCachingStrategy<Vector>(maxMemory: 500_000_000))
     }
 }

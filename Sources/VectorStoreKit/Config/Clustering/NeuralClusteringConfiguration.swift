@@ -15,7 +15,7 @@ public struct NeuralClusteringConfig: Sendable, Codable {
     public let probeHiddenSizes: [Int]
     
     /// Activation function for hidden layers
-    public let activation: ActivationType
+    public let activation: Activation
     
     /// Dropout rate for regularization
     public let dropoutRate: Float
@@ -210,14 +210,7 @@ public struct NeuralClusteringConfig: Sendable, Codable {
 // MARK: - Supporting Types
 
 /// Activation function types
-public enum ActivationType: String, Codable, Sendable {
-    case relu = "relu"
-    case leakyRelu = "leaky_relu"
-    case tanh = "tanh"
-    case sigmoid = "sigmoid"
-    case gelu = "gelu"
-    case swish = "swish"
-}
+// ActivationType is defined in Core/ML/Activations.swift
 
 /// Centroid initialization methods
 public enum CentroidInitMethod: String, Codable, Sendable {

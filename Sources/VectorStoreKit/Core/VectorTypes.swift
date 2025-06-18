@@ -4,6 +4,7 @@
 
 import Foundation
 import simd
+import Accelerate
 
 // MARK: - Core Vector Types
 
@@ -67,11 +68,106 @@ where Vector.Scalar: BinaryFloatingPoint {
         self.accessPattern = AccessPattern()
     }
     
+    /// Create a new vector entry with cached quality assessment (async)
+    public init(
+        id: VectorID,
+        vector: Vector,
+        metadata: Metadata,
+        tier: StorageTier = .auto,
+        quality: VectorQuality
+    ) {
+        self.id = id
+        self.vector = vector
+        self.metadata = metadata
+        self.timestamp = DispatchTime.now().uptimeNanoseconds
+        self.tier = tier
+        self.quality = quality
+        self.compressionRatio = 1.0
+        self.accessPattern = AccessPattern()
+    }
+    
+    /// Factory method that uses cached quality assessment
+    public static func createWithCache(
+        id: VectorID,
+        vector: Vector,
+        metadata: Metadata,
+        tier: StorageTier = .auto
+    ) async -> VectorEntry {
+        let quality = await VectorQuality.assessWithCache(vector)
+        return VectorEntry(
+            id: id,
+            vector: vector,
+            metadata: metadata,
+            tier: tier,
+            quality: quality
+        )
+    }
+    
     /// Update access pattern for ML-driven optimization
     public mutating func recordAccess(at time: Timestamp = DispatchTime.now().uptimeNanoseconds) {
         accessPattern.recordAccess(at: time)
     }
 }
+
+// MARK: - Vector Quality Assessment Cache
+
+/// Thread-safe cache for VectorQuality assessments using LRU eviction
+actor VectorQualityCache {
+    private var cache: [Data: VectorQuality] = [:]
+    private var accessOrder: [Data] = []
+    private let maxSize: Int
+    
+    /// Initialize with configurable max size
+    init(maxSize: Int = 1000) {
+        self.maxSize = maxSize
+    }
+    
+    /// Get cached quality assessment
+    func get(for vectorData: Data) -> VectorQuality? {
+        if let quality = cache[vectorData] {
+            // Move to end for LRU behavior
+            if let index = accessOrder.firstIndex(of: vectorData) {
+                accessOrder.remove(at: index)
+                accessOrder.append(vectorData)
+            }
+            return quality
+        }
+        return nil
+    }
+    
+    /// Store quality assessment in cache with LRU eviction
+    func set(_ quality: VectorQuality, for vectorData: Data) {
+        // Check if we need to evict
+        if cache.count >= maxSize && cache[vectorData] == nil {
+            // Remove least recently used
+            if let oldest = accessOrder.first {
+                cache.removeValue(forKey: oldest)
+                accessOrder.removeFirst()
+            }
+        }
+        
+        // Add to cache
+        cache[vectorData] = quality
+        if let index = accessOrder.firstIndex(of: vectorData) {
+            accessOrder.remove(at: index)
+        }
+        accessOrder.append(vectorData)
+    }
+    
+    /// Clear the cache
+    func clear() {
+        cache.removeAll()
+        accessOrder.removeAll()
+    }
+    
+    /// Get current cache size
+    func size() -> Int {
+        cache.count
+    }
+}
+
+/// Global cache instance
+private let qualityCache = VectorQualityCache()
 
 // MARK: - Vector Quality Assessment
 
@@ -112,6 +208,31 @@ public struct VectorQuality: Codable, Sendable {
         )
     }
     
+    /// Assess vector quality with caching support (async version)
+    public static func assessWithCache<V: SIMD>(_ vector: V) async -> VectorQuality
+    where V.Scalar: BinaryFloatingPoint {
+        // Convert vector to Data for cache key
+        let vectorData = withUnsafeBytes(of: vector) { Data($0) }
+        
+        // Check cache first
+        if let cached = await qualityCache.get(for: vectorData) {
+            return cached
+        }
+        
+        // Compute quality metrics
+        let quality = assess(vector)
+        
+        // Store in cache
+        await qualityCache.set(quality, for: vectorData)
+        
+        return quality
+    }
+    
+    /// Clear the quality assessment cache
+    public static func clearCache() async {
+        await qualityCache.clear()
+    }
+    
     private static func computeMagnitude<V: SIMD>(_ vector: V) -> Float 
     where V.Scalar: BinaryFloatingPoint {
         let squares = vector * vector
@@ -128,15 +249,53 @@ public struct VectorQuality: Codable, Sendable {
     
     private static func computeEntropy<V: SIMD>(_ vector: V) -> Float 
     where V.Scalar: BinaryFloatingPoint {
-        // Simplified entropy calculation for research purposes
-        let values = (0..<vector.scalarCount).map { Float(vector[$0]) }
-        let sum = values.reduce(0, +)
+        // SIMD-optimized entropy calculation using vDSP
+        let count = vector.scalarCount
+        
+        // Convert SIMD vector to Float array for vDSP
+        var values = [Float](repeating: 0, count: count)
+        for i in 0..<count {
+            values[i] = Float(vector[i])
+        }
+        
+        // Calculate absolute values using vDSP
+        var absValues = [Float](repeating: 0, count: count)
+        vDSP_vabs(values, 1, &absValues, 1, vDSP_Length(count))
+        
+        // Calculate sum using vDSP
+        var sum: Float = 0
+        vDSP_sve(absValues, 1, &sum, vDSP_Length(count))
         guard sum > 0 else { return 0 }
         
-        let probabilities = values.map { abs($0) / abs(sum) }
-        return probabilities.reduce(0) { entropy, p in
-            p > 0 ? entropy - p * log2(p) : entropy
+        // Calculate probabilities using vDSP (divide by sum)
+        var probabilities = [Float](repeating: 0, count: count)
+        var reciprocalSum = 1.0 / sum
+        vDSP_vsmul(absValues, 1, &reciprocalSum, &probabilities, 1, vDSP_Length(count))
+        
+        // Calculate -p * log2(p) for entropy using vDSP
+        // First, filter out zero probabilities and calculate log2
+        var logProbs = [Float](repeating: 0, count: count)
+        var entropy: Float = 0
+        
+        // vDSP doesn't have log2, so we use natural log and convert
+        let log2e: Float = 1.0 / log(2.0)
+        
+        // Calculate entropy: sum of -p * log2(p)
+        // We need to handle zeros carefully
+        for i in 0..<count {
+            if probabilities[i] > 0 {
+                logProbs[i] = log(probabilities[i]) * log2e
+            }
         }
+        
+        // Multiply probabilities by their log values
+        var entropyTerms = [Float](repeating: 0, count: count)
+        vDSP_vmul(probabilities, 1, logProbs, 1, &entropyTerms, 1, vDSP_Length(count))
+        
+        // Sum the entropy terms
+        vDSP_sve(entropyTerms, 1, &entropy, vDSP_Length(count))
+        
+        return -entropy
     }
     
     private static func computeQuantizability<V: SIMD>(_ vector: V) -> Float 
@@ -339,23 +498,6 @@ public enum QuantizationScheme: Sendable, Codable, Equatable {
     case vector(codebookSize: Int)
     case learned(modelID: String? = nil)
     case none
-    
-    // Legacy naming support for backward compatibility
-    public static func scalarQuantization(bits: Int) -> QuantizationScheme {
-        .scalar(bits: bits)
-    }
-    
-    public static func productQuantization(segments: Int, bits: Int) -> QuantizationScheme {
-        .product(segments: segments, bits: bits)
-    }
-    
-    public static var binaryQuantization: QuantizationScheme {
-        .binary
-    }
-    
-    public static func vectorQuantization(codebookSize: Int) -> QuantizationScheme {
-        .vector(codebookSize: codebookSize)
-    }
     
     // For Metal shader compatibility
     public var metalFunctionName: String {

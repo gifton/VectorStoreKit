@@ -454,35 +454,10 @@ where Vector.Scalar: BinaryFloatingPoint {
         query: [Float],
         centroids: [[Float]]
     ) async throws -> [(index: Int, distance: Float)] {
-        if metalCompute != nil {
-            // Use GPU acceleration with proper dimension handling
-            guard !centroids.isEmpty else {
-                return []
-            }
-            
-            let _ = query.count // dimensions unused for now
-            
-            // MetalCompute should handle raw float arrays directly
-            // For now, we'll use CPU computation until Metal compute is properly integrated
-            // TODO: Integrate with MetalCompute's batch distance computation
-            /*
-            let result = try await metalCompute.computeBatchDistances(
-                query: query,
-                candidates: centroids,
-                metric: .euclidean
-            )
-            return result.distances.enumerated().map { ($0, $1) }
-            */
-            
-            // Fallback to CPU computation for now
-            return centroids.enumerated().map { index, centroid in
-                (index, computeDistance(query, centroid))
-            }
-        } else {
-            // CPU computation
-            return centroids.enumerated().map { index, centroid in
-                (index, computeDistance(query, centroid))
-            }
+        // For now, use CPU computation for array-based vectors
+        // TODO: Add support for converting arrays to SIMD vectors when dimensions match
+        return centroids.enumerated().map { index, centroid in
+            (index, computeDistance(query, centroid))
         }
     }
     

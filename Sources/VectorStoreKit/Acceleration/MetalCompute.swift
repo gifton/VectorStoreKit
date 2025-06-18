@@ -52,7 +52,7 @@ public actor MetalCompute {
             profiler: profiler
         )
         
-        self.matrixCompute = MetalMatrixCompute(
+        self.matrixCompute = await MetalMatrixCompute(
             device: device,
             bufferPool: bufferPool,
             pipelineManager: pipelineManager,

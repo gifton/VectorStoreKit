@@ -492,11 +492,13 @@ public actor NeuralClustering {
         // Track cluster utilization and analyze result patterns
         for (query, queryResults) in zip(queries, results) {
             // Track cluster probabilities
-            let probTask = Task {
-                try await getClusterProbabilities(for: query)
+            let probTask = Task { [weak self] in
+                guard let self else { return nil }
+                return try await self.getClusterProbabilities(for: query)
             }
-            if let probabilities = try? await probTask.value {
-                performanceMetrics.updateClusterUtilization(probabilities)
+            if let probabilities = try? await probTask.value,
+               let probs = probabilities {
+                performanceMetrics.updateClusterUtilization(probs)
             }
             
             // Analyze search results to improve clustering

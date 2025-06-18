@@ -11,7 +11,7 @@ public class ComprehensiveBenchmarks {
     
     // MARK: - Benchmark Configuration
     
-    public struct BenchmarkConfiguration {
+    public struct ComprehensiveBenchmarkConfig {
         public let dimensions: Int
         public let vectorCounts: [Int]
         public let queryCount: Int
@@ -35,16 +35,16 @@ public class ComprehensiveBenchmarks {
             self.warmupIterations = warmupIterations
         }
         
-        public static let small = BenchmarkConfiguration(
+        public static let small = ComprehensiveBenchmarkConfig(
             dimensions: 64,
             vectorCounts: [100, 1_000, 10_000],
             queryCount: 100,
             iterations: 3
         )
         
-        public static let standard = BenchmarkConfiguration()
+        public static let standard = ComprehensiveBenchmarkConfig()
         
-        public static let large = BenchmarkConfiguration(
+        public static let large = ComprehensiveBenchmarkConfig(
             dimensions: 256,
             vectorCounts: [10_000, 100_000, 1_000_000],
             queryCount: 10_000,
@@ -54,7 +54,7 @@ public class ComprehensiveBenchmarks {
     
     // MARK: - Benchmark Results
     
-    public struct BenchmarkResult {
+    public struct BenchmarkRunResult {
         public let indexType: String
         public let vectorCount: Int
         public let insertTime: TimeInterval
@@ -71,7 +71,7 @@ public class ComprehensiveBenchmarks {
     }
     
     public struct ComparisonReport {
-        public let results: [BenchmarkResult]
+        public let results: [BenchmarkRunResult]
         public let bestInsertPerformance: String
         public let bestSearchPerformance: String
         public let bestMemoryEfficiency: String
@@ -81,12 +81,12 @@ public class ComprehensiveBenchmarks {
     
     // MARK: - Initialization
     
-    private let configuration: BenchmarkConfiguration
+    private let configuration: ComprehensiveBenchmarkConfig
     private let reporter: BenchmarkReporter
     private var groundTruth: [String: [String]] = [:] // Query ID -> Ground truth result IDs
     
     public init(
-        configuration: BenchmarkConfiguration = .standard,
+        configuration: ComprehensiveBenchmarkConfig = .standard,
         reporter: BenchmarkReporter = BenchmarkReporter()
     ) {
         self.configuration = configuration
@@ -98,7 +98,7 @@ public class ComprehensiveBenchmarks {
     public func runAllBenchmarks() async throws -> ComparisonReport {
         reporter.startSession("VectorStoreKit Comprehensive Benchmarks")
         
-        var allResults: [BenchmarkResult] = []
+        var allResults: [BenchmarkRunResult] = []
         
         for vectorCount in configuration.vectorCounts {
             reporter.startSection("Benchmarking with \(vectorCount) vectors")
@@ -137,7 +137,7 @@ public class ComprehensiveBenchmarks {
     private func benchmarkIVFIndex(
         vectors: [[Float]],
         queries: [[Float]]
-    ) async throws -> BenchmarkResult {
+    ) async throws -> BenchmarkRunResult {
         reporter.startBenchmark("IVF Index")
         
         // Create index with different configurations
@@ -174,7 +174,7 @@ public class ComprehensiveBenchmarks {
         
         reporter.endBenchmark()
         
-        return BenchmarkResult(
+        return BenchmarkRunResult(
             indexType: "IVF",
             vectorCount: vectors.count,
             insertTime: insertTime,
@@ -182,7 +182,7 @@ public class ComprehensiveBenchmarks {
             memoryUsage: memoryUsage,
             recall: recall,
             precision: recall, // Approximate
-            throughput: BenchmarkResult.ThroughputMetrics(
+            throughput: BenchmarkRunResult.ThroughputMetrics(
                 insertsPerSecond: insertThroughput,
                 queriesPerSecond: searchThroughput
             )
@@ -194,7 +194,7 @@ public class ComprehensiveBenchmarks {
     private func benchmarkLearnedIndex(
         vectors: [[Float]],
         queries: [[Float]]
-    ) async throws -> BenchmarkResult {
+    ) async throws -> BenchmarkRunResult {
         reporter.startBenchmark("Learned Index")
         
         // Create index with MLP architecture
@@ -230,7 +230,7 @@ public class ComprehensiveBenchmarks {
         
         reporter.endBenchmark()
         
-        return BenchmarkResult(
+        return BenchmarkRunResult(
             indexType: "Learned",
             vectorCount: vectors.count,
             insertTime: insertTime + trainTime,
@@ -238,7 +238,7 @@ public class ComprehensiveBenchmarks {
             memoryUsage: memoryUsage,
             recall: recall,
             precision: recall,
-            throughput: BenchmarkResult.ThroughputMetrics(
+            throughput: BenchmarkRunResult.ThroughputMetrics(
                 insertsPerSecond: insertThroughput,
                 queriesPerSecond: searchThroughput
             )
@@ -250,7 +250,7 @@ public class ComprehensiveBenchmarks {
     private func benchmarkHybridIndex(
         vectors: [[Float]],
         queries: [[Float]]
-    ) async throws -> BenchmarkResult {
+    ) async throws -> BenchmarkRunResult {
         reporter.startBenchmark("Hybrid Index")
         
         // Create index with adaptive routing
@@ -290,7 +290,7 @@ public class ComprehensiveBenchmarks {
         
         reporter.endBenchmark()
         
-        return BenchmarkResult(
+        return BenchmarkRunResult(
             indexType: "Hybrid",
             vectorCount: vectors.count,
             insertTime: insertTime,
@@ -298,7 +298,7 @@ public class ComprehensiveBenchmarks {
             memoryUsage: memoryUsage,
             recall: recall,
             precision: recall,
-            throughput: BenchmarkResult.ThroughputMetrics(
+            throughput: BenchmarkRunResult.ThroughputMetrics(
                 insertsPerSecond: insertThroughput,
                 queriesPerSecond: searchThroughput
             )
@@ -522,9 +522,9 @@ public class ComprehensiveBenchmarks {
     
     // MARK: - Report Generation
     
-    private func generateComparisonReport(results: [BenchmarkResult]) -> ComparisonReport {
+    private func generateComparisonReport(results: [BenchmarkRunResult]) -> ComparisonReport {
         // Group by vector count
-        var groupedResults: [Int: [BenchmarkResult]] = [:]
+        var groupedResults: [Int: [BenchmarkRunResult]] = [:]
         for result in results {
             groupedResults[result.vectorCount, default: []].append(result)
         }

@@ -461,12 +461,12 @@ public enum StoragePriority: Int, Sendable, CaseIterable {
 }
 
 /// Durability guarantees
-public enum DurabilityLevel: Sendable {
-    case none          // No durability guarantee
-    case eventual      // Eventually consistent
-    case standard      // Standard ACID properties
-    case strict        // Strict consistency
-    case extreme       // Maximum durability with multi-region replication
+public enum DurabilityLevel: String, Sendable, Codable {
+    case none = "none"          // No durability guarantee
+    case eventual = "eventual"  // Eventually consistent
+    case standard = "standard"  // Standard ACID properties
+    case strict = "strict"      // Strict consistency
+    case extreme = "extreme"    // Maximum durability with multi-region replication
 }
 
 /// Optimization strategies
@@ -496,6 +496,9 @@ public enum SearchFilter: Sendable {
     case composite(CompositeFilter)
     case learned(LearnedFilter)
 }
+
+/// Type alias for backward compatibility with VectorFilter usage
+public typealias VectorSearchFilter = SearchFilter
 
 public struct MetadataFilter: Sendable {
     public let key: String
@@ -541,6 +544,41 @@ public struct LearnedFilter: Sendable {
     public let modelIdentifier: String
     public let confidence: Float
     public let parameters: [String: String] // Changed from Any to String for Sendable compliance
+}
+
+// MARK: - Additional Filter Types
+
+/// User-based filter for user-specific vector filtering
+public struct UserFilter: Sendable {
+    public let userId: String
+    public let excludeId: String?
+    
+    public init(userId: String) {
+        self.userId = userId
+        self.excludeId = nil
+    }
+    
+    public init(excludeId: String) {
+        self.userId = ""
+        self.excludeId = excludeId
+    }
+}
+
+/// Filter to exclude specific vector IDs from search results
+public struct ExcludeIdFilter: Sendable {
+    public let excludedIds: Set<String>
+    
+    public init(id: String) {
+        self.excludedIds = Set([id])
+    }
+    
+    public init(ids: [String]) {
+        self.excludedIds = Set(ids)
+    }
+    
+    public init(excludedIds: Set<String>) {
+        self.excludedIds = excludedIds
+    }
 }
 
 /// Compression capabilities
@@ -808,6 +846,7 @@ public enum RecommendationType: String, Sendable {
     case prefetching = "prefetching"
     case partitioning = "partitioning"
     case indexOptimization = "index_optimization"
+    case configuration = "configuration"
 }
 
 // MARK: - Strategy Supporting Types
@@ -869,7 +908,7 @@ public enum DynamismLevel: Sendable {
     case fullyDynamic
 }
 
-public enum ScalabilityLevel: String, Sendable {
+public enum ScalabilityLevel: String, Sendable, Codable {
     case poor = "poor"
     case moderate = "moderate"
     case medium = "medium"  // alias for moderate
@@ -886,13 +925,13 @@ public enum ParallelismLevel: Sendable {
 /// Storage characteristics
 public struct StorageCharacteristics: Sendable {
     public let durability: DurabilityLevel
-    public let consistency: ConsistencyLevel
+    public let consistency: StorageConsistencyLevel
     public let scalability: ScalabilityLevel
     public let compression: CompressionLevel
     
     public init(
         durability: DurabilityLevel,
-        consistency: ConsistencyLevel,
+        consistency: StorageConsistencyLevel,
         scalability: ScalabilityLevel,
         compression: CompressionLevel
     ) {
@@ -904,7 +943,7 @@ public struct StorageCharacteristics: Sendable {
 }
 
 /// Consistency level for storage operations
-public enum ConsistencyLevel: String, Sendable, Codable {
+public enum StorageConsistencyLevel: String, Sendable, Codable {
     case eventual = "eventual"
     case strong = "strong"
     case strict = "strict"        // Alias for strong

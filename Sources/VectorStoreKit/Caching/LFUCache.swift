@@ -25,13 +25,13 @@ private class FrequencyNode<Vector: SIMD> where Vector.Scalar: BinaryFloatingPoi
 private struct LFUEntry<Vector: SIMD> where Vector.Scalar: BinaryFloatingPoint {
     var entry: CacheEntry<Vector>
     var frequency: Float // Use Float for decay support
-    var lastAccessTime: Date
+    var lastAccessTime: ContinuousClock.Instant
     var frequencyNode: FrequencyNode<Vector>?
     
     init(entry: CacheEntry<Vector>, frequency: Float = 1.0) {
         self.entry = entry
         self.frequency = frequency
-        self.lastAccessTime = Date()
+        self.lastAccessTime = ContinuousClock.now
     }
 }
 
@@ -56,12 +56,16 @@ public actor BasicLFUVectorCache<Vector: SIMD & Sendable>: VectorCache where Vec
     // Decay parameters
     private let decayFactor: Float = 0.95
     private let decayInterval: TimeInterval = 300 // 5 minutes
-    private var lastDecayTime: Date = Date()
+    private var lastDecayTime = ContinuousClock.now
+    
+    // Scheduler tasks
+    private var decayTask: Task<Void, Never>?
+    private var thresholdTask: Task<Void, Never>?
     
     // Adaptive threshold
     private var adaptiveEvictionThreshold: Float = 2.0
     private let thresholdUpdateInterval: TimeInterval = 600 // 10 minutes
-    private var lastThresholdUpdate: Date = Date()
+    private var lastThresholdUpdate = ContinuousClock.now
     
     // Statistics
     private var hitCount: Int = 0
@@ -88,6 +92,18 @@ public actor BasicLFUVectorCache<Vector: SIMD & Sendable>: VectorCache where Vec
         }
         self.configuration = LFUCacheConfiguration(maxMemory: maxMemory)
         self.storageBackend = storageBackend
+        
+        // Schedulers will be started in a non-isolated context
+    }
+    
+    public func start() async {
+        startDecayScheduler()
+        startThresholdScheduler()
+    }
+    
+    deinit {
+        decayTask?.cancel()
+        thresholdTask?.cancel()
     }
     
     // MARK: - Core Properties
@@ -103,17 +119,18 @@ public actor BasicLFUVectorCache<Vector: SIMD & Sendable>: VectorCache where Vec
     // MARK: - Core Operations
     
     public func get(id: VectorID) async -> Vector? {
-        let startTime = Date()
+        let startTime = ContinuousClock.now
         defer {
-            totalAccessTime += Date().timeIntervalSince(startTime)
-            Task { 
-                await applyDecayIfNeeded()
-                await prefetchEngine.recordAccess(id: id)
-            }
+            let elapsed = ContinuousClock.now - startTime
+            totalAccessTime += Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
         }
         
         guard var lfuEntry = cache[id] else {
             missCount += 1
+            
+            // Record miss synchronously
+            await prefetchEngine.recordAccess(id: id)
+            
             return nil
         }
         
@@ -122,6 +139,9 @@ public actor BasicLFUVectorCache<Vector: SIMD & Sendable>: VectorCache where Vec
         // Update frequency with increment
         incrementFrequency(for: id, entry: &lfuEntry)
         cache[id] = lfuEntry
+        
+        // Record hit synchronously
+        await prefetchEngine.recordAccess(id: id)
         
         return lfuEntry.entry.vector
     }
@@ -137,7 +157,7 @@ public actor BasicLFUVectorCache<Vector: SIMD & Sendable>: VectorCache where Vec
                 timestamp: Date(),
                 accessCount: existingEntry.entry.accessCount + 1
             )
-            existingEntry.lastAccessTime = Date()
+            existingEntry.lastAccessTime = ContinuousClock.now
             cache[id] = existingEntry
             return
         }
@@ -156,9 +176,6 @@ public actor BasicLFUVectorCache<Vector: SIMD & Sendable>: VectorCache where Vec
         
         // Add to frequency list
         addToFrequencyList(id: id, frequency: 1)
-        
-        // Update adaptive threshold
-        await updateAdaptiveThreshold()
     }
     
     public func remove(id: VectorID) async {
@@ -300,8 +317,12 @@ public actor BasicLFUVectorCache<Vector: SIMD & Sendable>: VectorCache where Vec
     }
     
     public func optimize() async {
-        // Apply frequency decay
-        await applyDecay()
+        // Force immediate decay if needed
+        let now = ContinuousClock.now
+        let elapsed = now - lastDecayTime
+        if elapsed.components.seconds > 60 { // Only if more than a minute since last decay
+            await applyDecay()
+        }
         
         // Remove entries below adaptive threshold
         var toRemove: [VectorID] = []
@@ -373,10 +394,46 @@ public actor BasicLFUVectorCache<Vector: SIMD & Sendable>: VectorCache where Vec
     
     // MARK: - Private Helpers
     
+    private func startDecayScheduler() {
+        decayTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    // Sleep for decay interval
+                    try await Task.sleep(for: .seconds(self?.decayInterval ?? 300))
+                    
+                    // Apply decay if still active
+                    guard let self else { return }
+                    await self.applyDecay()
+                } catch {
+                    // Task cancelled
+                    break
+                }
+            }
+        }
+    }
+    
+    private func startThresholdScheduler() {
+        thresholdTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    // Sleep for threshold update interval
+                    try await Task.sleep(for: .seconds(self?.thresholdUpdateInterval ?? 600))
+                    
+                    // Update threshold if still active
+                    guard let self else { return }
+                    await self.updateAdaptiveThreshold()
+                } catch {
+                    // Task cancelled
+                    break
+                }
+            }
+        }
+    }
+    
     private func incrementFrequency(for id: VectorID, entry: inout LFUEntry<Vector>) {
         let oldFreq = Int(entry.frequency)
         entry.frequency += 1.0
-        entry.lastAccessTime = Date()
+        entry.lastAccessTime = ContinuousClock.now
         
         // Update frequency list
         removeFromFrequencyList(id: id, frequency: oldFreq)
@@ -404,18 +461,24 @@ public actor BasicLFUVectorCache<Vector: SIMD & Sendable>: VectorCache where Vec
         if node.entries.isEmpty {
             frequencyList.removeValue(forKey: frequency)
             
-            // Update min frequency if needed
+            // Update min frequency if needed - compute lazily
             if frequency == minFrequency {
-                minFrequency = frequencyList.keys.min() ?? 0
+                // Will be recomputed when needed in evictLeastFrequentlyUsed
+                minFrequency = -1 // Mark as invalid
             }
         }
     }
     
     private func evictLeastFrequentlyUsed() async {
+        // Recompute minFrequency if invalid
+        if minFrequency < 0 || frequencyList[minFrequency] == nil {
+            minFrequency = frequencyList.keys.min() ?? 0
+        }
+        
         // Find candidates with lowest frequency
         var candidateId: VectorID?
         var lowestFrequency = Float.greatestFiniteMagnitude
-        var oldestAccess = Date()
+        var oldestAccess = ContinuousClock.now
         
         // Look for entries at or near min frequency
         let frequencyRange = minFrequency...(minFrequency + 2)
@@ -448,20 +511,15 @@ public actor BasicLFUVectorCache<Vector: SIMD & Sendable>: VectorCache where Vec
         }
     }
     
-    private func applyDecayIfNeeded() async {
-        let now = Date()
-        if now.timeIntervalSince(lastDecayTime) > decayInterval {
-            await applyDecay()
-        }
-    }
+    // Removed applyDecayIfNeeded - now handled by scheduler
     
     private func applyDecay() async {
-        let now = Date()
+        let now = ContinuousClock.now
         
         for (id, var entry) in cache {
             // Apply time-based decay
-            let timeSinceAccess = now.timeIntervalSince(entry.lastAccessTime)
-            let decayMultiplier = pow(decayFactor, Float(timeSinceAccess / decayInterval))
+            let timeSinceAccess = (now - entry.lastAccessTime).components.seconds
+            let decayMultiplier = pow(decayFactor, Float(Double(timeSinceAccess) / decayInterval))
             
             let oldFreq = Int(entry.frequency)
             entry.frequency *= decayMultiplier
@@ -482,9 +540,6 @@ public actor BasicLFUVectorCache<Vector: SIMD & Sendable>: VectorCache where Vec
     }
     
     private func updateAdaptiveThreshold() async {
-        let now = Date()
-        guard now.timeIntervalSince(lastThresholdUpdate) > thresholdUpdateInterval else { return }
-        
         // Track recent hit rates
         recentHitRates.append(hitRate)
         if recentHitRates.count > maxHitRateHistory {
@@ -505,7 +560,7 @@ public actor BasicLFUVectorCache<Vector: SIMD & Sendable>: VectorCache where Vec
         // Keep threshold in reasonable bounds
         adaptiveEvictionThreshold = max(1.0, min(10.0, adaptiveEvictionThreshold))
         
-        lastThresholdUpdate = now
+        lastThresholdUpdate = ContinuousClock.now
     }
     
     private func cleanupFrequencyList() {

@@ -25,7 +25,7 @@ public struct TestMetadata: Codable, Sendable {
 
 
 /// Benchmark configuration
-public struct BenchmarkConfiguration: Sendable {
+public struct IndexBenchmarkConfig: Sendable {
     public let vectorDimensions: [Int]
     public let datasetSizes: [Int]
     public let queryBatchSizes: [Int]
@@ -58,7 +58,7 @@ public struct BenchmarkConfiguration: Sendable {
         self.outputPath = outputPath
     }
     
-    public static let quick = BenchmarkConfiguration(
+    public static let quick = IndexBenchmarkConfig(
         vectorDimensions: [128, 512],
         datasetSizes: [1000, 10_000],
         queryBatchSizes: [1, 100],
@@ -67,9 +67,9 @@ public struct BenchmarkConfiguration: Sendable {
         warmupIterations: 1
     )
     
-    public static let comprehensive = BenchmarkConfiguration()
+    public static let comprehensive = IndexBenchmarkConfig()
     
-    public static let performance = BenchmarkConfiguration(
+    public static let performance = IndexBenchmarkConfig(
         vectorDimensions: [128, 256, 512],
         datasetSizes: [10_000, 100_000, 1_000_000],
         queryBatchSizes: [1, 10, 100],
@@ -80,7 +80,7 @@ public struct BenchmarkConfiguration: Sendable {
 }
 
 /// Benchmark result for a single test
-public struct BenchmarkResult: Sendable, Codable {
+public struct IndexBenchmarkResult: Sendable, Codable {
     public let indexType: String
     public let dimensions: Int
     public let datasetSize: Int
@@ -126,15 +126,15 @@ public struct BenchmarkResult: Sendable, Codable {
 
 /// Benchmark runner
 public actor IndexBenchmarkRunner {
-    private let configuration: BenchmarkConfiguration
-    private var results: [BenchmarkResult] = []
+    private let configuration: IndexBenchmarkConfig
+    private var results: [IndexBenchmarkResult] = []
     
-    public init(configuration: BenchmarkConfiguration = .comprehensive) {
+    public init(configuration: IndexBenchmarkConfig = .comprehensive) {
         self.configuration = configuration
     }
     
     /// Run benchmarks for all index types
-    public func runAllBenchmarks() async throws -> [BenchmarkResult] {
+    public func runAllBenchmarks() async throws -> [IndexBenchmarkResult] {
         results = []
         
         for dimensions in configuration.vectorDimensions {
@@ -321,7 +321,7 @@ public actor IndexBenchmarkRunner {
         testData: TestData,
         dimensions: Int,
         datasetSize: Int
-    ) async throws -> BenchmarkResult
+    ) async throws -> IndexBenchmarkResult
     where Index.Vector == SIMD32<Float>, Index.Metadata == TestMetadata {
         
         let memoryBaseline = await getMemoryUsage()
@@ -388,7 +388,7 @@ public actor IndexBenchmarkRunner {
         
         let memoryPeak = await getMemoryUsage()
         
-        return BenchmarkResult(
+        return IndexBenchmarkResult(
             indexType: indexType,
             dimensions: dimensions,
             datasetSize: datasetSize,

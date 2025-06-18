@@ -5,6 +5,18 @@
 import Foundation
 import simd
 
+// Local export error
+enum HybridExportError: LocalizedError {
+    case unsupportedFormat(ExportFormat)
+    
+    var errorDescription: String? {
+        switch self {
+        case .unsupportedFormat(let format):
+            return "Unsupported export format: \(format)"
+        }
+    }
+}
+
 /// Query routing decision
 private struct RoutingDecision: Sendable {
     let useIVF: Bool
@@ -323,7 +335,7 @@ where Vector.Scalar: BinaryFloatingPoint {
         case .binary:
             return try PropertyListEncoder().encode(exportData)
         default:
-            throw ExportError.unsupportedFormat(format)
+            throw HybridExportError.unsupportedFormat(format)
         }
     }
     

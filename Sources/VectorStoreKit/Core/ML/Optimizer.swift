@@ -27,22 +27,33 @@ public actor SGDOptimizer: Optimizer {
     private let momentum: Float
     private let weightDecay: Float
     private let nesterov: Bool
+    private let gradientClipping: Float?
     private var velocities: [String: Float] = [:]
     
     public init(
         learningRate: Float = 0.01,
         momentum: Float = 0.0,
         weightDecay: Float = 0.0,
-        nesterov: Bool = false
+        nesterov: Bool = false,
+        gradientClipping: Float? = nil
     ) {
         self.learningRate = learningRate
         self.momentum = momentum
         self.weightDecay = weightDecay
         self.nesterov = nesterov
+        self.gradientClipping = gradientClipping
     }
     
     public func update(parameter: Float, gradient: Float, name: String) async -> Float {
         var grad = gradient
+        
+        // Apply gradient clipping if specified
+        if let maxNorm = gradientClipping {
+            let gradNorm = abs(grad)
+            if gradNorm > maxNorm {
+                grad = grad * (maxNorm / gradNorm)
+            }
+        }
         
         // Apply weight decay (L2 regularization)
         if weightDecay > 0 {
@@ -85,6 +96,7 @@ public actor AdamOptimizer: Optimizer {
     private let beta2: Float
     private let epsilon: Float
     private let weightDecay: Float
+    private let gradientClipping: Float?
     private var firstMoments: [String: Float] = [:]
     private var secondMoments: [String: Float] = [:]
     private var timestep: Int = 0
@@ -94,19 +106,29 @@ public actor AdamOptimizer: Optimizer {
         beta1: Float = 0.9,
         beta2: Float = 0.999,
         epsilon: Float = 1e-8,
-        weightDecay: Float = 0.0
+        weightDecay: Float = 0.0,
+        gradientClipping: Float? = nil
     ) {
         self.learningRate = learningRate
         self.beta1 = beta1
         self.beta2 = beta2
         self.epsilon = epsilon
         self.weightDecay = weightDecay
+        self.gradientClipping = gradientClipping
     }
     
     public func update(parameter: Float, gradient: Float, name: String) async -> Float {
         timestep += 1
         
         var grad = gradient
+        
+        // Apply gradient clipping if specified
+        if let maxNorm = gradientClipping {
+            let gradNorm = abs(grad)
+            if gradNorm > maxNorm {
+                grad = grad * (maxNorm / gradNorm)
+            }
+        }
         
         // Apply weight decay
         if weightDecay > 0 {
@@ -155,6 +177,7 @@ public actor RMSpropOptimizer: Optimizer {
     private let epsilon: Float
     private let momentum: Float
     private let centered: Bool
+    private let gradientClipping: Float?
     private var meanSquares: [String: Float] = [:]
     private var meanGrads: [String: Float] = [:]
     private var momentumBuffer: [String: Float] = [:]
@@ -164,17 +187,27 @@ public actor RMSpropOptimizer: Optimizer {
         decay: Float = 0.99,
         epsilon: Float = 1e-8,
         momentum: Float = 0.0,
-        centered: Bool = false
+        centered: Bool = false,
+        gradientClipping: Float? = nil
     ) {
         self.learningRate = learningRate
         self.decay = decay
         self.epsilon = epsilon
         self.momentum = momentum
         self.centered = centered
+        self.gradientClipping = gradientClipping
     }
     
     public func update(parameter: Float, gradient: Float, name: String) async -> Float {
-        let grad = gradient
+        var grad = gradient
+        
+        // Apply gradient clipping if specified
+        if let maxNorm = gradientClipping {
+            let gradNorm = abs(grad)
+            if gradNorm > maxNorm {
+                grad = grad * (maxNorm / gradNorm)
+            }
+        }
         
         // Update mean squared gradient
         let ms = meanSquares[name] ?? 0.0
@@ -225,20 +258,31 @@ public actor AdaGradOptimizer: Optimizer {
     public var learningRate: Float
     private let epsilon: Float
     private let initialAccumulatorValue: Float
+    private let gradientClipping: Float?
     private var accumulators: [String: Float] = [:]
     
     public init(
         learningRate: Float = 0.01,
         epsilon: Float = 1e-10,
-        initialAccumulatorValue: Float = 0.0
+        initialAccumulatorValue: Float = 0.0,
+        gradientClipping: Float? = nil
     ) {
         self.learningRate = learningRate
         self.epsilon = epsilon
         self.initialAccumulatorValue = initialAccumulatorValue
+        self.gradientClipping = gradientClipping
     }
     
     public func update(parameter: Float, gradient: Float, name: String) async -> Float {
-        let grad = gradient
+        var grad = gradient
+        
+        // Apply gradient clipping if specified
+        if let maxNorm = gradientClipping {
+            let gradNorm = abs(grad)
+            if gradNorm > maxNorm {
+                grad = grad * (maxNorm / gradNorm)
+            }
+        }
         
         // Update accumulator
         let acc = accumulators[name] ?? initialAccumulatorValue
@@ -337,3 +381,88 @@ public struct WarmupScheduler: LearningRateScheduler {
         return targetLR
     }
 }
+
+/// AdamW optimizer (Adam with decoupled weight decay)
+public actor AdamWOptimizer: Optimizer {
+    public var learningRate: Float
+    private let beta1: Float
+    private let beta2: Float
+    private let epsilon: Float
+    private let weightDecay: Float
+    private let gradientClipping: Float?
+    private var firstMoments: [String: Float] = [:]
+    private var secondMoments: [String: Float] = [:]
+    private var timestep: Int = 0
+    
+    public init(
+        learningRate: Float = 0.001,
+        beta1: Float = 0.9,
+        beta2: Float = 0.999,
+        epsilon: Float = 1e-8,
+        weightDecay: Float = 0.01,
+        gradientClipping: Float? = nil
+    ) {
+        self.learningRate = learningRate
+        self.beta1 = beta1
+        self.beta2 = beta2
+        self.epsilon = epsilon
+        self.weightDecay = weightDecay
+        self.gradientClipping = gradientClipping
+    }
+    
+    public func update(parameter: Float, gradient: Float, name: String) async -> Float {
+        timestep += 1
+        
+        var grad = gradient
+        
+        // Apply gradient clipping if specified
+        if let maxNorm = gradientClipping {
+            let gradNorm = abs(grad)
+            if gradNorm > maxNorm {
+                grad = grad * (maxNorm / gradNorm)
+            }
+        }
+        
+        // Update biased first moment estimate
+        let m = firstMoments[name] ?? 0.0
+        let newM = beta1 * m + (1 - beta1) * grad
+        firstMoments[name] = newM
+        
+        // Update biased second raw moment estimate
+        let v = secondMoments[name] ?? 0.0
+        let newV = beta2 * v + (1 - beta2) * grad * grad
+        secondMoments[name] = newV
+        
+        // Compute bias-corrected first moment estimate
+        let mHat = newM / (1 - pow(beta1, Float(timestep)))
+        
+        // Compute bias-corrected second raw moment estimate
+        let vHat = newV / (1 - pow(beta2, Float(timestep)))
+        
+        // Update parameters with AdamW formula
+        // First apply Adam update
+        var newParam = parameter - learningRate * mHat / (sqrt(vHat) + epsilon)
+        
+        // Then apply decoupled weight decay
+        newParam = newParam * (1 - learningRate * weightDecay)
+        
+        return newParam
+    }
+    
+    public func reset() async {
+        firstMoments.removeAll()
+        secondMoments.removeAll()
+        timestep = 0
+    }
+    
+    public func getCurrentLearningRate() async -> Float {
+        learningRate
+    }
+    
+    public func setLearningRate(_ learningRate: Float) async {
+        self.learningRate = learningRate
+    }
+}
+
+// Type alias for convenience
+public typealias AdamW = AdamWOptimizer

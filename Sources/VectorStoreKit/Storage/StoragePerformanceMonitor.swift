@@ -192,14 +192,14 @@ actor StoragePerformanceMonitor {
     }
     
     /// Get detailed performance report
-    func getDetailedReport() async -> PerformanceReport {
+    func getDetailedReport() async -> StoragePerformanceReport {
         var tierReports: [StorageTier: TierPerformanceReport] = [:]
         
         for (tier, tierMetrics) in operationMetrics {
-            var operationReports: [StorageOperation: OperationReport] = [:]
+            var operationReports: [StorageOperation: StorageOperationReport] = [:]
             
             for (operation, metrics) in tierMetrics {
-                let report = OperationReport(
+                let report = StorageOperationReport(
                     operation: operation,
                     count: metrics.count,
                     averageLatency: metrics.averageLatency,
@@ -221,7 +221,7 @@ actor StoragePerformanceMonitor {
         
         let stats = await getStatistics()
         
-        return PerformanceReport(
+        return StoragePerformanceReport(
             startTime: startTime ?? Date(),
             endTime: Date(),
             totalOperations: totalOperations,
@@ -260,7 +260,7 @@ actor StoragePerformanceMonitor {
 
 // MARK: - Performance Report Types
 
-struct PerformanceReport {
+struct StoragePerformanceReport {
     let startTime: Date
     let endTime: Date
     let totalOperations: Int
@@ -272,12 +272,12 @@ struct PerformanceReport {
 
 struct TierPerformanceReport {
     let tier: StorageTier
-    let operations: [StoragePerformanceMonitor.StorageOperation: OperationReport]
+    let operations: [StoragePerformanceMonitor.StorageOperation: StorageOperationReport]
     let totalOperations: Int
     let totalErrors: Int
 }
 
-struct OperationReport {
+struct StorageOperationReport {
     let operation: StoragePerformanceMonitor.StorageOperation
     let count: Int
     let averageLatency: TimeInterval

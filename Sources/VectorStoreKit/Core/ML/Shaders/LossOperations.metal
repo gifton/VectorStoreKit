@@ -22,7 +22,10 @@ kernel void mse_loss(
     float squared_diff = diff * diff;
     loss[gid] = squared_diff;
     
-    atomic_fetch_add_explicit(total_loss, squared_diff / float(size), memory_order_relaxed);
+    // Protect against division by zero
+    float divisor = float(size);
+    if (divisor < 1e-7f) divisor = 1e-7f;
+    atomic_fetch_add_explicit(total_loss, squared_diff / divisor, memory_order_relaxed);
 }
 
 /// Compute MSE gradient
@@ -34,7 +37,12 @@ kernel void mse_gradient(
     uint gid [[thread_position_in_grid]]
 ) {
     if (gid >= size) return;
-    gradient[gid] = 2.0f * (prediction[gid] - target[gid]) / float(size);
+    
+    // Protect against division by zero
+    float divisor = float(size);
+    if (divisor < 1e-7f) divisor = 1e-7f;
+    
+    gradient[gid] = 2.0f * (prediction[gid] - target[gid]) / divisor;
 }
 
 // MARK: - Mean Absolute Error
@@ -53,7 +61,10 @@ kernel void mae_loss(
     float abs_diff = abs(prediction[gid] - target[gid]);
     loss[gid] = abs_diff;
     
-    atomic_fetch_add_explicit(total_loss, abs_diff / float(size), memory_order_relaxed);
+    // Protect against division by zero
+    float divisor = float(size);
+    if (divisor < 1e-7f) divisor = 1e-7f;
+    atomic_fetch_add_explicit(total_loss, abs_diff / divisor, memory_order_relaxed);
 }
 
 /// Compute MAE gradient
@@ -65,8 +76,19 @@ kernel void mae_gradient(
     uint gid [[thread_position_in_grid]]
 ) {
     if (gid >= size) return;
+    
     float diff = prediction[gid] - target[gid];
-    gradient[gid] = diff > 0 ? 1.0f / float(size) : -1.0f / float(size);
+    
+    // Protect against division by zero
+    float divisor = float(size);
+    if (divisor < 1e-7f) divisor = 1e-7f;
+    
+    // Handle near-zero differences
+    if (abs(diff) < 1e-7f) {
+        gradient[gid] = 0.0f;
+    } else {
+        gradient[gid] = diff > 0 ? 1.0f / divisor : -1.0f / divisor;
+    }
 }
 
 // MARK: - Cross Entropy
@@ -94,8 +116,20 @@ kernel void cross_entropy_loss(
     // Compute log-sum-exp
     float sum_exp = 0.0f;
     for (uint i = 0; i < num_classes; i++) {
-        sum_exp += exp(logits[offset + i] - max_logit);
+        // Clamp to prevent exp overflow
+        float diff = clamp(logits[offset + i] - max_logit, -88.0f, 88.0f);
+        float exp_val = exp(diff);
+        
+        // Handle NaN/Inf
+        if (isnan(exp_val) || isinf(exp_val)) {
+            exp_val = 0.0f;
+        }
+        
+        sum_exp += exp_val;
     }
+    
+    // Protect against log(0)
+    if (sum_exp < 1e-7f) sum_exp = 1e-7f;
     float log_sum_exp = log(sum_exp) + max_logit;
     
     // Compute loss for this sample
@@ -105,7 +139,11 @@ kernel void cross_entropy_loss(
     }
     
     loss[gid] = sample_loss;
-    atomic_fetch_add_explicit(total_loss, sample_loss / float(batch_size), memory_order_relaxed);
+    
+    // Protect against division by zero
+    float divisor = float(batch_size);
+    if (divisor < 1e-7f) divisor = 1e-7f;
+    atomic_fetch_add_explicit(total_loss, sample_loss / divisor, memory_order_relaxed);
 }
 
 /// Compute cross entropy gradient (softmax - target)
@@ -132,13 +170,34 @@ kernel void cross_entropy_gradient(
     
     float sum_exp = 0.0f;
     for (uint i = 0; i < num_classes; i++) {
-        sum_exp += exp(logits[offset + i] - max_logit);
+        // Clamp to prevent exp overflow
+        float diff = clamp(logits[offset + i] - max_logit, -88.0f, 88.0f);
+        float exp_val = exp(diff);
+        
+        // Handle NaN/Inf
+        if (isnan(exp_val) || isinf(exp_val)) {
+            exp_val = 0.0f;
+        }
+        
+        sum_exp += exp_val;
     }
     
-    float softmax_val = exp(logits[offset + cls] - max_logit) / sum_exp;
+    // Protect against division by zero
+    if (sum_exp < 1e-7f) sum_exp = 1e-7f;
+    
+    // Compute softmax with clamping
+    float cls_diff = clamp(logits[offset + cls] - max_logit, -88.0f, 88.0f);
+    float exp_cls = exp(cls_diff);
+    if (isnan(exp_cls) || isinf(exp_cls)) exp_cls = 0.0f;
+    
+    float softmax_val = exp_cls / sum_exp;
+    
+    // Protect batch_size division
+    float batch_divisor = float(batch_size);
+    if (batch_divisor < 1e-7f) batch_divisor = 1e-7f;
     
     // Gradient is softmax - target
-    gradient[offset + cls] = (softmax_val - target[offset + cls]) / float(batch_size);
+    gradient[offset + cls] = (softmax_val - target[offset + cls]) / batch_divisor;
 }
 
 // MARK: - Binary Cross Entropy
@@ -161,9 +220,18 @@ kernel void binary_cross_entropy_loss(
     pred = clamp(pred, 1e-7f, 1.0f - 1e-7f);
     
     float sample_loss = -targ * log(pred) - (1.0f - targ) * log(1.0f - pred);
+    
+    // Check for NaN/Inf in loss
+    if (isnan(sample_loss) || isinf(sample_loss)) {
+        sample_loss = 0.0f;
+    }
+    
     loss[gid] = sample_loss;
     
-    atomic_fetch_add_explicit(total_loss, sample_loss / float(size), memory_order_relaxed);
+    // Protect against division by zero
+    float divisor = float(size);
+    if (divisor < 1e-7f) divisor = 1e-7f;
+    atomic_fetch_add_explicit(total_loss, sample_loss / divisor, memory_order_relaxed);
 }
 
 /// Compute binary cross entropy gradient
@@ -182,7 +250,11 @@ kernel void binary_cross_entropy_gradient(
     // Clamp to avoid division by zero
     pred = clamp(pred, 1e-7f, 1.0f - 1e-7f);
     
-    gradient[gid] = (pred - targ) / (pred * (1.0f - pred) * float(size));
+    // Compute denominator with protection
+    float denominator = pred * (1.0f - pred) * float(size);
+    if (denominator < 1e-7f) denominator = 1e-7f;
+    
+    gradient[gid] = (pred - targ) / denominator;
 }
 
 // MARK: - Huber Loss
@@ -209,7 +281,11 @@ kernel void huber_loss(
     }
     
     loss[gid] = sample_loss;
-    atomic_fetch_add_explicit(total_loss, sample_loss / float(size), memory_order_relaxed);
+    
+    // Protect against division by zero
+    float divisor = float(size);
+    if (divisor < 1e-7f) divisor = 1e-7f;
+    atomic_fetch_add_explicit(total_loss, sample_loss / divisor, memory_order_relaxed);
 }
 
 /// Compute Huber loss gradient
@@ -226,10 +302,14 @@ kernel void huber_gradient(
     float diff = prediction[gid] - target[gid];
     float abs_diff = abs(diff);
     
+    // Protect against division by zero
+    float divisor = float(size);
+    if (divisor < 1e-7f) divisor = 1e-7f;
+    
     if (abs_diff <= delta) {
-        gradient[gid] = diff / float(size);
+        gradient[gid] = diff / divisor;
     } else {
-        gradient[gid] = delta * (diff > 0 ? 1.0f : -1.0f) / float(size);
+        gradient[gid] = delta * (diff > 0 ? 1.0f : -1.0f) / divisor;
     }
 }
 
@@ -254,5 +334,10 @@ kernel void reduce_mean(
     uint gid [[thread_position_in_grid]]
 ) {
     if (gid >= size) return;
-    atomic_fetch_add_explicit(output, input[gid] / float(size), memory_order_relaxed);
+    
+    // Protect against division by zero
+    float divisor = float(size);
+    if (divisor < 1e-7f) divisor = 1e-7f;
+    
+    atomic_fetch_add_explicit(output, input[gid] / divisor, memory_order_relaxed);
 }

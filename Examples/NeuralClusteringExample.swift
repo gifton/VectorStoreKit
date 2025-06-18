@@ -47,7 +47,7 @@ struct NeuralClusteringExample {
         print("  - Online adaptation: Enabled\n")
         
         // Create index
-        let index = try await IVFIndex<SIMD128<Float>, DocumentMetadata>(
+        let index = try await IVFIndex<SIMD32<Float>, DocumentMetadata>(
             configuration: ivfConfig
         )
         
@@ -62,7 +62,7 @@ struct NeuralClusteringExample {
         // Train the index
         print("🎯 Training neural clustering...")
         let trainingStart = Date()
-        try await index.train(on: vectors.map { $0.1 })
+        try await index.train(on: vectors.map { $0.0 })
         let trainingTime = Date().timeIntervalSince(trainingStart)
         print("✅ Training completed in \(String(format: "%.2f", trainingTime))s\n")
         
@@ -74,7 +74,7 @@ struct NeuralClusteringExample {
                 print("  Inserted \(i)/\(vectorCount) vectors...")
             }
             
-            let simdVector = vectorToSIMD128(vector)
+            let simdVector = vectorToSIMD32(vector)
             let entry = VectorEntry(
                 id: "doc_\(i)",
                 vector: simdVector,
@@ -95,7 +95,7 @@ struct NeuralClusteringExample {
             dimensions: dimensions,
             noise: 0.3
         )
-        let query = vectorToSIMD128(queryVector)
+        let query = vectorToSIMD32(queryVector)
         
         print("\n  Query: Documents similar to topic \(queryTopic)")
         
@@ -203,9 +203,9 @@ struct NeuralClusteringExample {
         return vector
     }
     
-    static func vectorToSIMD128(_ vector: [Float]) -> SIMD128<Float> {
-        var simd = SIMD128<Float>()
-        for i in 0..<min(vector.count, 128) {
+    static func vectorToSIMD32(_ vector: [Float]) -> SIMD32<Float> {
+        var simd = SIMD32<Float>()
+        for i in 0..<min(vector.count, 32) {
             simd[i] = vector[i]
         }
         return simd
@@ -234,10 +234,10 @@ struct DocumentMetadata: Codable, Sendable {
 
 // MARK: - SIMD Extensions
 
-extension SIMD128 where Scalar == Float {
+extension SIMD32 where Scalar == Float {
     init(_ array: [Float]) {
         self.init()
-        for i in 0..<Swift.min(array.count, 128) {
+        for i in 0..<Swift.min(array.count, 32) {
             self[i] = array[i]
         }
     }

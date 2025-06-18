@@ -217,13 +217,13 @@ public struct DistributedStorageStrategy: StorageStrategy, Sendable {
 public struct DistributedStorageConfiguration: Sendable, StorageConfiguration, Codable {
     public let nodes: [StorageNode]
     public let replicationFactor: Int
-    public let consistencyLevel: ConsistencyLevel
+    public let consistencyLevel: StorageConsistencyLevel
     public let partitionStrategy: PartitionStrategy
     
     public init(
         nodes: [StorageNode],
         replicationFactor: Int = 3,
-        consistencyLevel: ConsistencyLevel = .strong,
+        consistencyLevel: StorageConsistencyLevel = .strong,
         partitionStrategy: PartitionStrategy = .consistent
     ) {
         self.nodes = nodes

@@ -96,8 +96,8 @@ struct VectorStoreKitBenchmark: AsyncParsableCommand {
         print("\n✅ Benchmarks completed in \(String(format: "%.2f", duration)) seconds")
     }
     
-    private func buildConfiguration() -> ComprehensiveBenchmarks.BenchmarkConfiguration {
-        var baseConfig: ComprehensiveBenchmarks.BenchmarkConfiguration
+    private func buildConfiguration() -> ComprehensiveBenchmarks.ComprehensiveBenchmarkConfig {
+        var baseConfig: ComprehensiveBenchmarks.ComprehensiveBenchmarkConfig
         
         switch size {
         case .small:
@@ -113,7 +113,7 @@ struct VectorStoreKitBenchmark: AsyncParsableCommand {
         let iterations = quick ? 2 : baseConfig.iterations
         let warmup = quick ? 1 : baseConfig.warmupIterations
         
-        return ComprehensiveBenchmarks.BenchmarkConfiguration(
+        return ComprehensiveBenchmarks.ComprehensiveBenchmarkConfig(
             dimensions: dimensions ?? baseConfig.dimensions,
             vectorCounts: vectorCounts,
             queryCount: queries ?? baseConfig.queryCount,

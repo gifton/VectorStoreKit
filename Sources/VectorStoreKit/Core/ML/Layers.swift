@@ -9,10 +9,10 @@ import Accelerate
 /// Dense (fully connected) layer
 public actor DenseLayer: NeuralLayer {
     // MARK: - Properties
-    private let inputSize: Int
-    private let outputSize: Int
-    private let activation: Activation
-    private let name: String
+    public let inputSize: Int
+    public let outputSize: Int
+    public let activation: Activation
+    public let name: String
     private let metalPipeline: MetalMLPipeline
     private var isTraining: Bool = true
     
@@ -29,6 +29,10 @@ public actor DenseLayer: NeuralLayer {
     private var lastInput: MetalBuffer?
     private var lastOutput: MetalBuffer?
     private var lastPreActivation: MetalBuffer?
+    
+    // Gradient accumulation buffers
+    private var accumulatedWeightsGrad: MetalBuffer?
+    private var accumulatedBiasGrad: MetalBuffer?
     
     // MARK: - Initialization
     public init(
@@ -93,8 +97,22 @@ public actor DenseLayer: NeuralLayer {
         }
         
         // Allocate gradient buffers
-        _ = try await paramStore.allocateGradient(name: weightsGradName, size: inputSize * outputSize)
-        _ = try await paramStore.allocateGradient(name: biasGradName, size: outputSize)
+        let weightsGrad = try await paramStore.allocateGradient(name: weightsGradName, size: inputSize * outputSize)
+        let biasGrad = try await paramStore.allocateGradient(name: biasGradName, size: outputSize)
+        
+        // Initialize gradient accumulators
+        self.accumulatedWeightsGrad = weightsGrad
+        self.accumulatedBiasGrad = biasGrad
+        
+        // Zero initialize gradients
+        let wGradPtr = weightsGrad.buffer.contents().bindMemory(to: Float.self, capacity: weightsGrad.count)
+        let bGradPtr = biasGrad.buffer.contents().bindMemory(to: Float.self, capacity: biasGrad.count)
+        for i in 0..<weightsGrad.count {
+            wGradPtr[i] = 0.0
+        }
+        for i in 0..<biasGrad.count {
+            bGradPtr[i] = 0.0
+        }
     }
     
     // MARK: - NeuralLayer Protocol
@@ -165,35 +183,110 @@ public actor DenseLayer: NeuralLayer {
         // Apply activation derivative
         let gradPreActivation = try await applyActivationDerivative(gradOutput, preActivation: preActivation)
         
-        // Compute weight gradients: gradW = gradOutput * input^T
-        let gradOutputPtr = gradPreActivation.buffer.contents().bindMemory(to: Float.self, capacity: gradPreActivation.count)
-        let inputPtr = input.buffer.contents().bindMemory(to: Float.self, capacity: input.count)
-        let weightsGradPtr = weightsGrad.buffer.contents().bindMemory(to: Float.self, capacity: weightsGrad.count)
+        // Compute weight gradients using Metal: gradW = gradOutput * input^T
+        let operations = await metalPipeline.getOperations()
         
-        for i in 0..<outputSize {
-            for j in 0..<inputSize {
-                weightsGradPtr[i * inputSize + j] = gradOutputPtr[i] * inputPtr[j]
+        // Use outer product for weight gradients
+        let shaderLibrary = await metalPipeline.getShaderLibrary()
+        let outerProductPipeline = try shaderLibrary.pipeline(for: MLShaderLibrary.MatrixOperation.outerProduct.rawValue)
+        let copyPipeline = try shaderLibrary.pipeline(for: MLShaderLibrary.MatrixOperation.copyMatrix.rawValue)
+        
+        let commandQueue = await metalPipeline.getMetalCommandQueue()
+        
+        try await commandQueue.submitAsync { commandBuffer in
+            guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+                throw MetalMLError.commandQueueCreationFailed
             }
-        }
-        
-        // Compute bias gradients: gradB = gradOutput
-        let biasGradPtr = biasGrad.buffer.contents().bindMemory(to: Float.self, capacity: biasGrad.count)
-        for i in 0..<outputSize {
-            biasGradPtr[i] = gradOutputPtr[i]
+            
+            // Use accumulation version to add to existing gradients
+            let accumulatePipeline = try shaderLibrary.pipeline(for: MLShaderLibrary.MatrixOperation.outerProductAccumulate.rawValue)
+            encoder.setComputePipelineState(accumulatePipeline)
+            encoder.setBuffer(gradPreActivation.buffer, offset: 0, index: 0)  // [outputSize x 1]
+            encoder.setBuffer(input.buffer, offset: 0, index: 1)               // [inputSize x 1]
+            encoder.setBuffer(weightsGrad.buffer, offset: 0, index: 2)         // [outputSize x inputSize]
+            
+            var M = UInt32(outputSize)
+            var N = UInt32(inputSize)
+            encoder.setBytes(&M, length: 4, index: 3)
+            encoder.setBytes(&N, length: 4, index: 4)
+            
+            let threadgroupSize = MTLSize(width: 16, height: 16, depth: 1)
+            let threadgroupCount = MTLSize(
+                width: (inputSize + 15) / 16,
+                height: (outputSize + 15) / 16,
+                depth: 1
+            )
+            
+            encoder.dispatchThreadgroups(threadgroupCount, threadsPerThreadgroup: threadgroupSize)
+            encoder.endEncoding()
+            
+            // Compute bias gradients using copy operation
+            guard let copyEncoder = commandBuffer.makeComputeCommandEncoder() else {
+                throw MetalMLError.commandQueueCreationFailed
+            }
+            
+            // Use accumulate operation for bias gradients
+            let biasAccumulatePipeline = try shaderLibrary.pipeline(for: MLShaderLibrary.OptimizationOperation.accumulateGradients.rawValue)
+            copyEncoder.setComputePipelineState(biasAccumulatePipeline)
+            copyEncoder.setBuffer(biasGrad.buffer, offset: 0, index: 0)  // Existing gradients
+            copyEncoder.setBuffer(gradPreActivation.buffer, offset: 0, index: 1)  // New gradients to add
+            
+            var count = UInt32(outputSize)
+            copyEncoder.setBytes(&count, length: 4, index: 2)
+            
+            let copyThreads = MTLSize(width: (outputSize + 255) / 256, height: 1, depth: 1)
+            let copyThreadgroup = MTLSize(width: 256, height: 1, depth: 1)
+            
+            copyEncoder.dispatchThreadgroups(copyThreads, threadsPerThreadgroup: copyThreadgroup)
+            copyEncoder.endEncoding()
         }
         
         // Compute input gradients: gradInput = weights^T * gradOutput
         let gradInput = try await allocateBuffer(size: inputSize)
-        let gradInputPtr = gradInput.buffer.contents().bindMemory(to: Float.self, capacity: gradInput.count)
-        let weightsPtr = weights.buffer.contents().bindMemory(to: Float.self, capacity: weights.count)
         
-        for j in 0..<inputSize {
-            var sum: Float = 0.0
-            for i in 0..<outputSize {
-                sum += weightsPtr[i * inputSize + j] * gradOutputPtr[i]
+        // First transpose the weights, then multiply
+        // For dense layer: weights are [outputSize x inputSize]
+        // We need weights^T which is [inputSize x outputSize]
+        let transposedWeights = try await allocateBuffer(size: weights.count)
+        
+        // Use transpose kernel
+        let transposePipeline = try shaderLibrary.pipeline(for: MLShaderLibrary.MatrixOperation.transpose.rawValue)
+        
+        try await commandQueue.submitAsync { commandBuffer in
+            guard let transposeEncoder = commandBuffer.makeComputeCommandEncoder() else {
+                throw MetalMLError.commandQueueCreationFailed
             }
-            gradInputPtr[j] = sum
+            
+            transposeEncoder.setComputePipelineState(transposePipeline)
+            transposeEncoder.setBuffer(weights.buffer, offset: 0, index: 0)
+            transposeEncoder.setBuffer(transposedWeights.buffer, offset: 0, index: 1)
+            
+            var rows = UInt32(outputSize)
+            var cols = UInt32(inputSize)
+            transposeEncoder.setBytes(&rows, length: 4, index: 2)
+            transposeEncoder.setBytes(&cols, length: 4, index: 3)
+            
+            let transposeThreads = MTLSize(width: 16, height: 16, depth: 1)
+            let transposeGroups = MTLSize(
+                width: (inputSize + 15) / 16,
+                height: (outputSize + 15) / 16,
+                depth: 1
+            )
+            
+            transposeEncoder.dispatchThreadgroups(transposeGroups, threadsPerThreadgroup: transposeThreads)
+            transposeEncoder.endEncoding()
         }
+        
+        // Now multiply transposed weights with gradients
+        try await operations.matmul(
+            transposedWeights,
+            gradPreActivation,
+            output: gradInput,
+            m: inputSize,
+            n: 1,
+            k: outputSize,
+            useTiling: false
+        )
         
         return gradInput
     }
@@ -221,8 +314,12 @@ public actor DenseLayer: NeuralLayer {
         inputSize * outputSize + outputSize
     }
     
-    public func setTraining(_ training: Bool) async {
+    public func setTraining(_ training: Bool) {
         self.isTraining = training
+    }
+    
+    public func getParameterStore() async -> ParameterStore {
+        parameterStore
     }
     
     private func allocateBuffer(size: Int) async throws -> MetalBuffer {
@@ -260,11 +357,226 @@ public actor DenseLayer: NeuralLayer {
         
         return gradInput
     }
+    
+    // MARK: - Gradient Management
+    
+    public func zeroGradients() async {
+        let paramStore = parameterStore
+        
+        // Zero weight gradients
+        if let weightsGrad = await paramStore.getGradient(name: weightsGradName) {
+            let shaderLibrary = await metalPipeline.getShaderLibrary()
+            let commandQueue = await metalPipeline.getMetalCommandQueue()
+            
+            do {
+                let zeroPipeline = try shaderLibrary.pipeline(for: MLShaderLibrary.OptimizationOperation.zeroGradients.rawValue)
+                
+                try await commandQueue.submitAsync { commandBuffer in
+                    guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+                        throw MetalMLError.commandQueueCreationFailed
+                    }
+                    
+                    encoder.setComputePipelineState(zeroPipeline)
+                    encoder.setBuffer(weightsGrad.buffer, offset: 0, index: 0)
+                    var count = UInt32(weightsGrad.count)
+                    encoder.setBytes(&count, length: 4, index: 1)
+                    
+                    let threads = MTLSize(width: (weightsGrad.count + 255) / 256, height: 1, depth: 1)
+                    let threadgroup = MTLSize(width: 256, height: 1, depth: 1)
+                    encoder.dispatchThreadgroups(threads, threadsPerThreadgroup: threadgroup)
+                    encoder.endEncoding()
+                }
+            } catch {
+                // Fallback to CPU zeroing
+                let ptr = weightsGrad.buffer.contents().bindMemory(to: Float.self, capacity: weightsGrad.count)
+                for i in 0..<weightsGrad.count {
+                    ptr[i] = 0.0
+                }
+            }
+        }
+        
+        // Zero bias gradients
+        if let biasGrad = await paramStore.getGradient(name: biasGradName) {
+            let shaderLibrary = await metalPipeline.getShaderLibrary()
+            let commandQueue = await metalPipeline.getMetalCommandQueue()
+            
+            do {
+                let zeroPipeline = try shaderLibrary.pipeline(for: MLShaderLibrary.OptimizationOperation.zeroGradients.rawValue)
+                
+                try await commandQueue.submitAsync { commandBuffer in
+                    guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+                        throw MetalMLError.commandQueueCreationFailed
+                    }
+                    
+                    encoder.setComputePipelineState(zeroPipeline)
+                    encoder.setBuffer(biasGrad.buffer, offset: 0, index: 0)
+                    var count = UInt32(biasGrad.count)
+                    encoder.setBytes(&count, length: 4, index: 1)
+                    
+                    let threads = MTLSize(width: (biasGrad.count + 255) / 256, height: 1, depth: 1)
+                    let threadgroup = MTLSize(width: 256, height: 1, depth: 1)
+                    encoder.dispatchThreadgroups(threads, threadsPerThreadgroup: threadgroup)
+                    encoder.endEncoding()
+                }
+            } catch {
+                // Fallback to CPU zeroing
+                let ptr = biasGrad.buffer.contents().bindMemory(to: Float.self, capacity: biasGrad.count)
+                for i in 0..<biasGrad.count {
+                    ptr[i] = 0.0
+                }
+            }
+        }
+    }
+    
+    public func scaleGradients(_ scale: Float) async {
+        let paramStore = parameterStore
+        
+        // Scale weight gradients
+        if let weightsGrad = await paramStore.getGradient(name: weightsGradName) {
+            let shaderLibrary = await metalPipeline.getShaderLibrary()
+            let commandQueue = await metalPipeline.getMetalCommandQueue()
+            
+            do {
+                let scalePipeline = try shaderLibrary.pipeline(for: MLShaderLibrary.OptimizationOperation.scaleGradients.rawValue)
+                
+                try await commandQueue.submitAsync { commandBuffer in
+                    guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+                        throw MetalMLError.commandQueueCreationFailed
+                    }
+                    
+                    encoder.setComputePipelineState(scalePipeline)
+                    encoder.setBuffer(weightsGrad.buffer, offset: 0, index: 0)
+                    var scaleValue = scale
+                    encoder.setBytes(&scaleValue, length: 4, index: 1)
+                    var count = UInt32(weightsGrad.count)
+                    encoder.setBytes(&count, length: 4, index: 2)
+                    
+                    let threads = MTLSize(width: (weightsGrad.count + 255) / 256, height: 1, depth: 1)
+                    let threadgroup = MTLSize(width: 256, height: 1, depth: 1)
+                    encoder.dispatchThreadgroups(threads, threadsPerThreadgroup: threadgroup)
+                    encoder.endEncoding()
+                }
+            } catch {
+                // Fallback to CPU scaling
+                let ptr = weightsGrad.buffer.contents().bindMemory(to: Float.self, capacity: weightsGrad.count)
+                for i in 0..<weightsGrad.count {
+                    ptr[i] *= scale
+                }
+            }
+        }
+        
+        // Scale bias gradients
+        if let biasGrad = await paramStore.getGradient(name: biasGradName) {
+            let shaderLibrary = await metalPipeline.getShaderLibrary()
+            let commandQueue = await metalPipeline.getMetalCommandQueue()
+            
+            do {
+                let scalePipeline = try shaderLibrary.pipeline(for: MLShaderLibrary.OptimizationOperation.scaleGradients.rawValue)
+                
+                try await commandQueue.submitAsync { commandBuffer in
+                    guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+                        throw MetalMLError.commandQueueCreationFailed
+                    }
+                    
+                    encoder.setComputePipelineState(scalePipeline)
+                    encoder.setBuffer(biasGrad.buffer, offset: 0, index: 0)
+                    var scaleValue = scale
+                    encoder.setBytes(&scaleValue, length: 4, index: 1)
+                    var count = UInt32(biasGrad.count)
+                    encoder.setBytes(&count, length: 4, index: 2)
+                    
+                    let threads = MTLSize(width: (biasGrad.count + 255) / 256, height: 1, depth: 1)
+                    let threadgroup = MTLSize(width: 256, height: 1, depth: 1)
+                    encoder.dispatchThreadgroups(threads, threadsPerThreadgroup: threadgroup)
+                    encoder.endEncoding()
+                }
+            } catch {
+                // Fallback to CPU scaling
+                let ptr = biasGrad.buffer.contents().bindMemory(to: Float.self, capacity: biasGrad.count)
+                for i in 0..<biasGrad.count {
+                    ptr[i] *= scale
+                }
+            }
+        }
+    }
+    
+    public func updateParametersWithOptimizer(_ optimizer: any Optimizer) async throws {
+        let paramStore = parameterStore
+        let lr = await optimizer.getCurrentLearningRate()
+        
+        // Update weights using gradients
+        if let weightsGrad = await paramStore.getGradient(name: weightsGradName) {
+            try await paramStore.updateParameter(name: weightsName, with: weightsGrad, learningRate: lr)
+        }
+        
+        // Update bias using gradients
+        if let biasGrad = await paramStore.getGradient(name: biasGradName) {
+            try await paramStore.updateParameter(name: biasName, with: biasGrad, learningRate: lr)
+        }
+    }
+    
+    // MARK: - Weight Loading
+    
+    /// Load pre-trained weights into the layer
+    public func loadWeights(weights: [Float], bias: [Float]) async throws {
+        // Validate dimensions
+        guard weights.count == inputSize * outputSize else {
+            throw VectorStoreError.dimensionMismatch(
+                expected: inputSize * outputSize,
+                actual: weights.count
+            )
+        }
+        
+        guard bias.count == outputSize else {
+            throw VectorStoreError.dimensionMismatch(
+                expected: outputSize,
+                actual: bias.count
+            )
+        }
+        
+        let paramStore = parameterStore
+        
+        // Get weight buffer
+        guard let weightsBuffer = await paramStore.getParameter(name: weightsName) else {
+            throw VectorStoreError(
+                category: .initialization,
+                code: .resourcesUnavailable,
+                message: "Weight buffer not initialized"
+            )
+        }
+        
+        // Get bias buffer  
+        guard let biasBuffer = await paramStore.getParameter(name: biasName) else {
+            throw VectorStoreError(
+                category: .initialization,
+                code: .resourcesUnavailable,
+                message: "Bias buffer not initialized"
+            )
+        }
+        
+        // Copy weights
+        let weightsPtr = weightsBuffer.buffer.contents().bindMemory(
+            to: Float.self,
+            capacity: weightsBuffer.count
+        )
+        for i in 0..<weights.count {
+            weightsPtr[i] = weights[i]
+        }
+        
+        // Copy bias
+        let biasPtr = biasBuffer.buffer.contents().bindMemory(
+            to: Float.self,
+            capacity: biasBuffer.count
+        )
+        for i in 0..<bias.count {
+            biasPtr[i] = bias[i]
+        }
+    }
 }
 
 /// Dropout layer for regularization
 public actor DropoutLayer: NeuralLayer {
-    private let rate: Float
+    public let rate: Float
     private var mask: MetalBuffer?
     private let metalPipeline: MetalMLPipeline
     private var isTraining: Bool = true
@@ -289,30 +601,29 @@ public actor DropoutLayer: NeuralLayer {
         // Use Metal shader for dropout
         let shaderLibrary = await metalPipeline.getShaderLibrary()
         let pipeline = try shaderLibrary.pipeline(for: "dropout_forward")
+        let commandQueue = await metalPipeline.getMetalCommandQueue()
         
-        guard let commandBuffer = await metalPipeline.getCommandQueue().makeCommandBuffer(),
-              let encoder = commandBuffer.makeComputeCommandEncoder() else {
-            throw MetalMLError.commandQueueCreationFailed
+        try await commandQueue.submitAsync { commandBuffer in
+            guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+                throw MetalMLError.commandQueueCreationFailed
+            }
+            
+            encoder.setComputePipelineState(pipeline)
+            encoder.setBuffer(input.buffer, offset: 0, index: 0)
+            encoder.setBuffer(output.buffer, offset: 0, index: 1)
+            encoder.setBuffer(mask.buffer, offset: 0, index: 2)
+            
+            var dropoutRate = rate
+            var seed = UInt32.random(in: 0..<UInt32.max)
+            encoder.setBytes(&dropoutRate, length: 4, index: 3)
+            encoder.setBytes(&seed, length: 4, index: 4)
+            
+            let threadsPerThreadgroup = MTLSize(width: 256, height: 1, depth: 1)
+            let threadgroups = MTLSize(width: (input.count + 255) / 256, height: 1, depth: 1)
+            
+            encoder.dispatchThreadgroups(threadgroups, threadsPerThreadgroup: threadsPerThreadgroup)
+            encoder.endEncoding()
         }
-        
-        encoder.setComputePipelineState(pipeline)
-        encoder.setBuffer(input.buffer, offset: 0, index: 0)
-        encoder.setBuffer(output.buffer, offset: 0, index: 1)
-        encoder.setBuffer(mask.buffer, offset: 0, index: 2)
-        
-        var dropoutRate = rate
-        var seed = UInt32.random(in: 0..<UInt32.max)
-        encoder.setBytes(&dropoutRate, length: 4, index: 3)
-        encoder.setBytes(&seed, length: 4, index: 4)
-        
-        let threadsPerThreadgroup = MTLSize(width: 256, height: 1, depth: 1)
-        let threadgroups = MTLSize(width: (input.count + 255) / 256, height: 1, depth: 1)
-        
-        encoder.dispatchThreadgroups(threadgroups, threadsPerThreadgroup: threadsPerThreadgroup)
-        encoder.endEncoding()
-        
-        commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
         
         return output
     }
@@ -327,25 +638,24 @@ public actor DropoutLayer: NeuralLayer {
         
         let shaderLibrary = await metalPipeline.getShaderLibrary()
         let pipeline = try shaderLibrary.pipeline(for: "dropout_backward")
+        let commandQueue = await metalPipeline.getMetalCommandQueue()
         
-        guard let commandBuffer = await metalPipeline.getCommandQueue().makeCommandBuffer(),
-              let encoder = commandBuffer.makeComputeCommandEncoder() else {
-            throw MetalMLError.commandQueueCreationFailed
+        try await commandQueue.submitAsync { commandBuffer in
+            guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+                throw MetalMLError.commandQueueCreationFailed
+            }
+            
+            encoder.setComputePipelineState(pipeline)
+            encoder.setBuffer(gradOutput.buffer, offset: 0, index: 0)
+            encoder.setBuffer(mask.buffer, offset: 0, index: 1)
+            encoder.setBuffer(gradInput.buffer, offset: 0, index: 2)
+            
+            let threadsPerThreadgroup = MTLSize(width: 256, height: 1, depth: 1)
+            let threadgroups = MTLSize(width: (gradOutput.count + 255) / 256, height: 1, depth: 1)
+            
+            encoder.dispatchThreadgroups(threadgroups, threadsPerThreadgroup: threadsPerThreadgroup)
+            encoder.endEncoding()
         }
-        
-        encoder.setComputePipelineState(pipeline)
-        encoder.setBuffer(gradOutput.buffer, offset: 0, index: 0)
-        encoder.setBuffer(mask.buffer, offset: 0, index: 1)
-        encoder.setBuffer(gradInput.buffer, offset: 0, index: 2)
-        
-        let threadsPerThreadgroup = MTLSize(width: 256, height: 1, depth: 1)
-        let threadgroups = MTLSize(width: (gradOutput.count + 255) / 256, height: 1, depth: 1)
-        
-        encoder.dispatchThreadgroups(threadgroups, threadsPerThreadgroup: threadsPerThreadgroup)
-        encoder.endEncoding()
-        
-        commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
         
         return gradInput
     }
@@ -362,8 +672,20 @@ public actor DropoutLayer: NeuralLayer {
         0
     }
     
-    public func setTraining(_ training: Bool) async {
+    public func setTraining(_ training: Bool) {
         self.isTraining = training
+    }
+    
+    public func zeroGradients() async {
+        // Dropout doesn't have gradients to zero
+    }
+    
+    public func scaleGradients(_ scale: Float) async {
+        // Dropout doesn't have gradients to scale
+    }
+    
+    public func updateParametersWithOptimizer(_ optimizer: any Optimizer) async throws {
+        // Dropout has no parameters to update
     }
     
     private func allocateBuffer(size: Int) async throws -> MetalBuffer {
@@ -371,230 +693,3 @@ public actor DropoutLayer: NeuralLayer {
     }
 }
 
-/// Batch normalization layer
-public actor BatchNormLayer: NeuralLayer {
-    private let numFeatures: Int
-    private let momentum: Float
-    private let epsilon: Float
-    private let metalPipeline: MetalMLPipeline
-    private var isTraining: Bool = true
-    
-    // Parameter names
-    private let gammaName: String
-    private let betaName: String
-    private let runningMeanName: String
-    private let runningVarName: String
-    
-    // Parameter store
-    private let parameterStore: ParameterStore
-    
-    // Cached values for backward pass
-    private var lastInput: MetalBuffer?
-    private var lastNormalized: MetalBuffer?
-    private var lastMean: MetalBuffer?
-    private var lastVar: MetalBuffer?
-    
-    public init(
-        numFeatures: Int,
-        momentum: Float = 0.9,
-        epsilon: Float = 1e-5,
-        name: String = "batchnorm",
-        metalPipeline: MetalMLPipeline
-    ) async throws {
-        self.numFeatures = numFeatures
-        self.momentum = momentum
-        self.epsilon = epsilon
-        self.metalPipeline = metalPipeline
-        
-        self.gammaName = "\(name)_gamma"
-        self.betaName = "\(name)_beta"
-        self.runningMeanName = "\(name)_running_mean"
-        self.runningVarName = "\(name)_running_var"
-        
-        self.parameterStore = await ParameterStore(device: metalPipeline.device)
-        
-        try await initializeParameters()
-    }
-    
-    private func initializeParameters() async throws {
-        let paramStore = parameterStore
-        
-        // Allocate learnable parameters
-        let gamma = try await paramStore.allocateParameter(name: gammaName, size: numFeatures)
-        let beta = try await paramStore.allocateParameter(name: betaName, size: numFeatures)
-        
-        // Initialize gamma to 1 and beta to 0
-        let gammaPtr = gamma.buffer.contents().bindMemory(to: Float.self, capacity: gamma.count)
-        let betaPtr = beta.buffer.contents().bindMemory(to: Float.self, capacity: beta.count)
-        
-        for i in 0..<numFeatures {
-            gammaPtr[i] = 1.0
-            betaPtr[i] = 0.0
-        }
-        
-        // Allocate running statistics
-        let runningMean = try await paramStore.allocateParameter(name: runningMeanName, size: numFeatures)
-        let runningVar = try await paramStore.allocateParameter(name: runningVarName, size: numFeatures)
-        
-        // Initialize to 0 and 1
-        let meanPtr = runningMean.buffer.contents().bindMemory(to: Float.self, capacity: runningMean.count)
-        let varPtr = runningVar.buffer.contents().bindMemory(to: Float.self, capacity: runningVar.count)
-        
-        for i in 0..<numFeatures {
-            meanPtr[i] = 0.0
-            varPtr[i] = 1.0
-        }
-        
-        // Allocate gradient buffers
-        _ = try await paramStore.allocateGradient(name: "\(gammaName)_grad", size: numFeatures)
-        _ = try await paramStore.allocateGradient(name: "\(betaName)_grad", size: numFeatures)
-    }
-    
-    public func forward(_ input: MetalBuffer) async throws -> MetalBuffer {
-        guard input.count == numFeatures else {
-            throw MetalMLError.incompatibleBufferSize(expected: numFeatures, actual: input.count)
-        }
-        
-        self.lastInput = input
-        let paramStore = parameterStore
-        
-        guard let gamma = await paramStore.getParameter(name: gammaName),
-              let beta = await paramStore.getParameter(name: betaName),
-              let runningMean = await paramStore.getParameter(name: runningMeanName),
-              let runningVar = await paramStore.getParameter(name: runningVarName) else {
-            throw MetalMLError.parameterNotFound(name: gammaName)
-        }
-        
-        let inputPtr = input.buffer.contents().bindMemory(to: Float.self, capacity: input.count)
-        let gammaPtr = gamma.buffer.contents().bindMemory(to: Float.self, capacity: gamma.count)
-        let betaPtr = beta.buffer.contents().bindMemory(to: Float.self, capacity: beta.count)
-        
-        let mean: MetalBuffer
-        let variance: MetalBuffer
-        
-        if isTraining {
-            // Note: This implementation assumes feature-wise normalization
-            // For proper batch normalization, we would need the full batch tensor
-            // Currently treating single sample as the batch
-            mean = try await allocateBuffer(size: numFeatures)
-            variance = try await allocateBuffer(size: numFeatures)
-            
-            let meanPtr = mean.buffer.contents().bindMemory(to: Float.self, capacity: mean.count)
-            let varPtr = variance.buffer.contents().bindMemory(to: Float.self, capacity: variance.count)
-            
-            // Compute mean and variance for each feature
-            // In a full implementation, this would compute across the batch dimension
-            for i in 0..<numFeatures {
-                meanPtr[i] = inputPtr[i]
-                // Variance of single sample is 0, using small epsilon for numerical stability
-                varPtr[i] = epsilon
-            }
-            
-            // Update running statistics with exponential moving average
-            let runningMeanPtr = runningMean.buffer.contents().bindMemory(to: Float.self, capacity: runningMean.count)
-            let runningVarPtr = runningVar.buffer.contents().bindMemory(to: Float.self, capacity: runningVar.count)
-            
-            for i in 0..<numFeatures {
-                runningMeanPtr[i] = momentum * runningMeanPtr[i] + (1 - momentum) * meanPtr[i]
-                runningVarPtr[i] = momentum * runningVarPtr[i] + (1 - momentum) * varPtr[i]
-            }
-        } else {
-            // Use running statistics during evaluation
-            mean = runningMean
-            variance = runningVar
-        }
-        
-        self.lastMean = mean
-        self.lastVar = variance
-        
-        // Normalize
-        let normalized = try await allocateBuffer(size: numFeatures)
-        let output = try await allocateBuffer(size: numFeatures)
-        
-        let normalizedPtr = normalized.buffer.contents().bindMemory(to: Float.self, capacity: normalized.count)
-        let outputPtr = output.buffer.contents().bindMemory(to: Float.self, capacity: output.count)
-        let meanPtr = mean.buffer.contents().bindMemory(to: Float.self, capacity: mean.count)
-        let varPtr = variance.buffer.contents().bindMemory(to: Float.self, capacity: variance.count)
-        
-        for i in 0..<numFeatures {
-            normalizedPtr[i] = (inputPtr[i] - meanPtr[i]) / sqrt(varPtr[i] + epsilon)
-            outputPtr[i] = gammaPtr[i] * normalizedPtr[i] + betaPtr[i]
-        }
-        
-        self.lastNormalized = normalized
-        
-        return output
-    }
-    
-    public func backward(_ gradOutput: MetalBuffer) async throws -> MetalBuffer {
-        guard let input = lastInput,
-              let normalized = lastNormalized,
-              let _ = lastMean,
-              let variance = lastVar else {
-            throw MetalMLError.incompatibleBufferSize(expected: 0, actual: 0)
-        }
-        
-        let paramStore = parameterStore
-        guard let gamma = await paramStore.getParameter(name: gammaName),
-              let gammaGrad = await paramStore.getGradient(name: "\(gammaName)_grad"),
-              let betaGrad = await paramStore.getGradient(name: "\(betaName)_grad") else {
-            throw MetalMLError.parameterNotFound(name: gammaName)
-        }
-        
-        // Batch normalization backward pass
-        let gradInput = try await allocateBuffer(size: input.count)
-        
-        let gradOutputPtr = gradOutput.buffer.contents().bindMemory(to: Float.self, capacity: gradOutput.count)
-        let normalizedPtr = normalized.buffer.contents().bindMemory(to: Float.self, capacity: normalized.count)
-        let gammaPtr = gamma.buffer.contents().bindMemory(to: Float.self, capacity: gamma.count)
-        let gammaGradPtr = gammaGrad.buffer.contents().bindMemory(to: Float.self, capacity: gammaGrad.count)
-        let betaGradPtr = betaGrad.buffer.contents().bindMemory(to: Float.self, capacity: betaGrad.count)
-        let gradInputPtr = gradInput.buffer.contents().bindMemory(to: Float.self, capacity: gradInput.count)
-        let varPtr = variance.buffer.contents().bindMemory(to: Float.self, capacity: variance.count)
-        
-        // Compute parameter gradients
-        for i in 0..<numFeatures {
-            // Gradient w.r.t gamma: sum over batch of gradOutput * normalized
-            gammaGradPtr[i] = gradOutputPtr[i] * normalizedPtr[i]
-            
-            // Gradient w.r.t beta: sum over batch of gradOutput
-            betaGradPtr[i] = gradOutputPtr[i]
-            
-            // Gradient w.r.t input (simplified for single sample)
-            // Full implementation would include batch statistics gradients
-            let stdInv = 1.0 / sqrt(varPtr[i] + epsilon)
-            gradInputPtr[i] = gradOutputPtr[i] * gammaPtr[i] * stdInv
-        }
-        
-        return gradInput
-    }
-    
-    public func updateParameters(_ gradients: MetalBuffer, learningRate: Float) async throws {
-        let paramStore = parameterStore
-        
-        if let gammaGrad = await paramStore.getGradient(name: "\(gammaName)_grad") {
-            try await paramStore.updateParameter(name: gammaName, with: gammaGrad, learningRate: learningRate)
-        }
-        
-        if let betaGrad = await paramStore.getGradient(name: "\(betaName)_grad") {
-            try await paramStore.updateParameter(name: betaName, with: betaGrad, learningRate: learningRate)
-        }
-    }
-    
-    public func getParameters() async -> MetalBuffer? {
-        let paramStore = parameterStore
-        return await paramStore.getParameter(name: gammaName)
-    }
-    
-    public func getParameterCount() async -> Int {
-        2 * numFeatures // gamma and beta
-    }
-    
-    public func setTraining(_ training: Bool) async {
-        self.isTraining = training
-    }
-    
-    private func allocateBuffer(size: Int) async throws -> MetalBuffer {
-        try await metalPipeline.allocateBuffer(size: size)
-    }
-}

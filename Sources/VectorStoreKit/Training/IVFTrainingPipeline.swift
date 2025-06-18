@@ -489,7 +489,10 @@ public actor IVFTrainingPipeline {
         
         // Calculate cluster balance
         let meanSize = Float(validationSet.count) / Float(centroids.count)
-        let variance = clusterSizes.map { Float($0) - meanSize }.map { $0 * $0 }.reduce(0, +) / Float(centroids.count)
+        let deviations = clusterSizes.map { Float($0) - meanSize }
+        let squaredDeviations = deviations.map { $0 * $0 }
+        let sumSquaredDeviations = squaredDeviations.reduce(0, +)
+        let variance = sumSquaredDeviations / Float(centroids.count)
         let clusterBalance = 1.0 - (sqrt(variance) / meanSize)
         
         // Calculate separability

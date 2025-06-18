@@ -8,15 +8,13 @@ import Foundation
 /// Neural network model with Metal acceleration
 public actor NeuralNetwork {
     // MARK: - Properties
-    private var layers: [any NeuralLayer]
-    private let metalPipeline: MetalMLPipeline
-    private let computationGraph: ComputationGraph
-    private var trainingHistory: NetworkTrainingHistory
+    internal var layers: [any NeuralLayer]
+    internal let metalPipeline: MetalMLPipeline
+    internal var trainingHistory: NetworkTrainingHistory
     
     // MARK: - Initialization
     public init(metalPipeline: MetalMLPipeline) async throws {
         self.metalPipeline = metalPipeline
-        self.computationGraph = ComputationGraph(metalPipeline: metalPipeline)
         self.layers = []
         self.trainingHistory = NetworkTrainingHistory()
     }
@@ -58,47 +56,71 @@ public actor NeuralNetwork {
             // Process mini-batches
             for batchStart in stride(from: 0, to: trainingData.count, by: config.batchSize) {
                 let batchEnd = min(batchStart + config.batchSize, trainingData.count)
-                var batchLoss: Float = 0
+                let actualBatchSize = batchEnd - batchStart
                 
-                // Clear computation graph for this batch
-                await computationGraph.clear()
+                // Prepare batch data
+                var batchInputs: [MetalBuffer] = []
+                var batchTargets: [MetalBuffer] = []
                 
-                // Process each sample in batch
                 for idx in batchStart..<batchEnd {
                     let (input, target) = trainingData[idx]
-                    
-                    // Forward pass
-                    let output = try await forward(input)
-                    
-                    // Compute loss
-                    let loss = try await computeLoss(
-                        prediction: output,
-                        target: target,
-                        lossFunction: config.lossFunction
-                    )
-                    
-                    batchLoss += loss
-                    
-                    // Backward pass
-                    let gradOutput = try await computeLossGradient(
-                        prediction: output,
-                        target: target,
-                        lossFunction: config.lossFunction
-                    )
-                    
-                    // Propagate gradients through layers
-                    var currentGrad = gradOutput
-                    for layer in layers.reversed() {
-                        currentGrad = try await layer.backward(currentGrad)
-                    }
-                    
-                    // Update parameters
+                    batchInputs.append(input)
+                    batchTargets.append(target)
+                }
+                
+                // Concatenate batch inputs and targets
+                let batchInput = try await concatenateBatch(batchInputs)
+                let batchTarget = try await concatenateBatch(batchTargets)
+                
+                // Forward pass on entire batch
+                let batchOutput = try await forward(batchInput)
+                
+                // Compute loss on batch
+                let batchLoss = try await computeLoss(
+                    prediction: batchOutput,
+                    target: batchTarget,
+                    lossFunction: config.lossFunction
+                )
+                
+                // Backward pass on batch
+                let gradOutput = try await computeLossGradient(
+                    prediction: batchOutput,
+                    target: batchTarget,
+                    lossFunction: config.lossFunction
+                )
+                
+                // Zero gradients before accumulation
+                for layer in layers {
+                    await layer.zeroGradients()
+                }
+                
+                // Propagate gradients through layers
+                var currentGrad = gradOutput
+                for layer in layers.reversed() {
+                    currentGrad = try await layer.backward(currentGrad)
+                }
+                
+                // Scale gradients by batch size for proper averaging
+                let scaleFactor = 1.0 / Float(actualBatchSize)
+                for layer in layers {
+                    await layer.scaleGradients(scaleFactor)
+                }
+                
+                // Update parameters using optimizer
+                if let optimizer = config.optimizer {
                     for layer in layers {
-                        try await layer.updateParameters(currentGrad, learningRate: config.learningRate)
+                        try await layer.updateParametersWithOptimizer(optimizer)
+                    }
+                } else {
+                    // Simple SGD update
+                    for layer in layers {
+                        // updateParameters expects the layer's accumulated gradients, not currentGrad
+                        if let params = await layer.getParameters() {
+                            try await layer.updateParameters(params, learningRate: config.learningRate)
+                        }
                     }
                 }
                 
-                batchLoss /= Float(batchEnd - batchStart)
                 totalLoss += batchLoss
                 batchCount += 1
             }
@@ -155,51 +177,72 @@ public actor NeuralNetwork {
             )
         }
         
-        // For now, compute on CPU - will be replaced with Metal kernel
-        let predPtr = prediction.buffer.contents().bindMemory(to: Float.self, capacity: prediction.count)
-        let targetPtr = target.buffer.contents().bindMemory(to: Float.self, capacity: target.count)
+        // Allocate buffers for loss computation
+        let lossBuffer = try await metalPipeline.allocateBuffer(size: prediction.count)
+        let totalLossBuffer = try await metalPipeline.allocateBuffer(size: 1)
         
-        var loss: Float = 0
+        // Initialize total loss to 0
+        let totalLossPtr = totalLossBuffer.buffer.contents().bindMemory(to: Float.self, capacity: 1)
+        totalLossPtr[0] = 0.0
         
+        // Get shader library and create command buffer
+        let shaderLibrary = await metalPipeline.getShaderLibrary()
+        let commandQueue = await metalPipeline.getMetalCommandQueue()
+        
+        // Select appropriate loss kernel
+        let functionName: String
         switch lossFunction {
         case .mse:
-            for i in 0..<prediction.count {
-                let diff = predPtr[i] - targetPtr[i]
-                loss += diff * diff
-            }
-            loss /= Float(prediction.count)
-            
-        case .mae:
-            for i in 0..<prediction.count {
-                loss += abs(predPtr[i] - targetPtr[i])
-            }
-            loss /= Float(prediction.count)
-            
+            functionName = MLShaderLibrary.LossFunction.mseLoss.rawValue
         case .crossEntropy:
-            for i in 0..<prediction.count {
-                loss += -targetPtr[i] * log(max(predPtr[i], 1e-7))
-            }
-            
-        case .binaryCrossEntropy:
-            for i in 0..<prediction.count {
-                loss += -targetPtr[i] * log(max(predPtr[i], 1e-7)) - (1 - targetPtr[i]) * log(max(1 - predPtr[i], 1e-7))
-            }
-            loss /= Float(prediction.count)
-            
-        case .huber:
-            let delta: Float = 1.0
-            for i in 0..<prediction.count {
-                let diff = abs(predPtr[i] - targetPtr[i])
-                if diff <= delta {
-                    loss += 0.5 * diff * diff
-                } else {
-                    loss += delta * (diff - 0.5 * delta)
-                }
-            }
-            loss /= Float(prediction.count)
+            functionName = MLShaderLibrary.LossFunction.crossEntropyLoss.rawValue
         }
         
-        return loss
+        let pipeline = try shaderLibrary.pipeline(for: functionName)
+        
+        try await commandQueue.submitAsync { commandBuffer in
+            guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+                throw MetalMLError.commandQueueCreationFailed
+            }
+            
+            encoder.setComputePipelineState(pipeline)
+            encoder.setBuffer(prediction.buffer, offset: 0, index: 0)
+            encoder.setBuffer(target.buffer, offset: 0, index: 1)
+            encoder.setBuffer(lossBuffer.buffer, offset: 0, index: 2)
+            encoder.setBuffer(totalLossBuffer.buffer, offset: 0, index: 3)
+            
+            switch lossFunction {
+            case .crossEntropy:
+                // For cross entropy, we need batch size and num classes
+                // Assuming single batch for now
+                var batchSize = UInt32(1)
+                var numClasses = UInt32(prediction.count)
+                encoder.setBytes(&batchSize, length: MemoryLayout<UInt32>.size, index: 4)
+                encoder.setBytes(&numClasses, length: MemoryLayout<UInt32>.size, index: 5)
+            default:
+                var size = UInt32(prediction.count)
+                encoder.setBytes(&size, length: MemoryLayout<UInt32>.size, index: 4)
+            }
+            
+            let threadgroupSize = MTLSize(width: 256, height: 1, depth: 1)
+            let threadgroupCount = MTLSize(
+                width: (prediction.count + threadgroupSize.width - 1) / threadgroupSize.width,
+                height: 1,
+                depth: 1
+            )
+            
+            encoder.dispatchThreadgroups(threadgroupCount, threadsPerThreadgroup: threadgroupSize)
+            encoder.endEncoding()
+        }
+        
+        // Read back the total loss
+        let totalLoss = totalLossPtr[0]
+        
+        // Release buffers
+        await metalPipeline.releaseBuffer(lossBuffer)
+        await metalPipeline.releaseBuffer(totalLossBuffer)
+        
+        return totalLoss
     }
     
     private func computeLossGradient(
@@ -209,43 +252,61 @@ public actor NeuralNetwork {
     ) async throws -> MetalBuffer {
         let gradient = try await metalPipeline.allocateBuffer(size: prediction.count)
         
-        let predPtr = prediction.buffer.contents().bindMemory(to: Float.self, capacity: prediction.count)
-        let targetPtr = target.buffer.contents().bindMemory(to: Float.self, capacity: target.count)
-        let gradPtr = gradient.buffer.contents().bindMemory(to: Float.self, capacity: gradient.count)
+        // Get shader library and create command buffer
+        let shaderLibrary = await metalPipeline.getShaderLibrary()
+        let commandQueue = await metalPipeline.getMetalCommandQueue()
         
+        // Select appropriate gradient kernel
+        let functionName: String
         switch lossFunction {
         case .mse:
-            for i in 0..<prediction.count {
-                gradPtr[i] = 2 * (predPtr[i] - targetPtr[i]) / Float(prediction.count)
-            }
-            
-        case .mae:
-            for i in 0..<prediction.count {
-                gradPtr[i] = predPtr[i] > targetPtr[i] ? 1.0 / Float(prediction.count) : -1.0 / Float(prediction.count)
-            }
-            
+            functionName = MLShaderLibrary.LossFunction.mseGradient.rawValue
         case .crossEntropy:
-            // For softmax + cross entropy, gradient is simply prediction - target
-            for i in 0..<prediction.count {
-                gradPtr[i] = predPtr[i] - targetPtr[i]
+            functionName = MLShaderLibrary.LossFunction.crossEntropyGradient.rawValue
+        }
+        
+        let pipeline = try shaderLibrary.pipeline(for: functionName)
+        
+        try await commandQueue.submitAsync { commandBuffer in
+            guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+                throw MetalMLError.commandQueueCreationFailed
             }
             
-        case .binaryCrossEntropy:
-            for i in 0..<prediction.count {
-                gradPtr[i] = (predPtr[i] - targetPtr[i]) / (max(predPtr[i] * (1 - predPtr[i]), 1e-7) * Float(prediction.count))
+            encoder.setComputePipelineState(pipeline)
+            encoder.setBuffer(prediction.buffer, offset: 0, index: 0)
+            encoder.setBuffer(target.buffer, offset: 0, index: 1)
+            encoder.setBuffer(gradient.buffer, offset: 0, index: 2)
+            
+            switch lossFunction {
+            case .crossEntropy:
+                // For cross entropy gradient, we need batch size and num classes
+                var batchSize = UInt32(1)
+                var numClasses = UInt32(prediction.count)
+                encoder.setBytes(&batchSize, length: MemoryLayout<UInt32>.size, index: 3)
+                encoder.setBytes(&numClasses, length: MemoryLayout<UInt32>.size, index: 4)
+                
+                // Use 2D thread configuration for cross entropy
+                let threadgroupSize = MTLSize(width: 16, height: 16, depth: 1)
+                let threadgroupCount = MTLSize(
+                    width: (1 + threadgroupSize.width - 1) / threadgroupSize.width,
+                    height: (prediction.count + threadgroupSize.height - 1) / threadgroupSize.height,
+                    depth: 1
+                )
+                encoder.dispatchThreadgroups(threadgroupCount, threadsPerThreadgroup: threadgroupSize)
+            default:
+                var size = UInt32(prediction.count)
+                encoder.setBytes(&size, length: MemoryLayout<UInt32>.size, index: 3)
+                
+                let threadgroupSize = MTLSize(width: 256, height: 1, depth: 1)
+                let threadgroupCount = MTLSize(
+                    width: (prediction.count + threadgroupSize.width - 1) / threadgroupSize.width,
+                    height: 1,
+                    depth: 1
+                )
+                encoder.dispatchThreadgroups(threadgroupCount, threadsPerThreadgroup: threadgroupSize)
             }
             
-        case .huber:
-            let delta: Float = 1.0
-            for i in 0..<prediction.count {
-                let diff = predPtr[i] - targetPtr[i]
-                let absDiff = abs(diff)
-                if absDiff <= delta {
-                    gradPtr[i] = diff / Float(prediction.count)
-                } else {
-                    gradPtr[i] = delta * (diff > 0 ? 1 : -1) / Float(prediction.count)
-                }
-            }
+            encoder.endEncoding()
         }
         
         return gradient
@@ -383,6 +444,30 @@ public actor NeuralNetwork {
         
         return minRecentLoss >= minPreviousLoss
     }
+    
+    // MARK: - Batch Processing Helpers
+    
+    private func concatenateBatch(_ buffers: [MetalBuffer]) async throws -> MetalBuffer {
+        guard !buffers.isEmpty else {
+            throw MetalMLError.invalidBufferSize("Empty batch")
+        }
+        
+        let elementSize = buffers[0].count
+        let totalSize = buffers.count * elementSize
+        let concatenated = try await metalPipeline.allocateBuffer(size: totalSize)
+        
+        // Copy each buffer to the appropriate offset
+        let ptr = concatenated.buffer.contents().bindMemory(to: Float.self, capacity: totalSize)
+        for (i, buffer) in buffers.enumerated() {
+            let bufferPtr = buffer.buffer.contents().bindMemory(to: Float.self, capacity: buffer.count)
+            let offset = i * elementSize
+            for j in 0..<buffer.count {
+                ptr[offset + j] = bufferPtr[j]
+            }
+        }
+        
+        return concatenated
+    }
 }
 
 // MARK: - Supporting Types
@@ -396,6 +481,8 @@ public struct NetworkTrainingConfig: Sendable {
     public let shuffle: Bool
     public let logInterval: Int
     public let earlyStoppingPatience: Int
+    public let optimizer: (any Optimizer)?
+    public let gradientClipping: Float?
     
     public init(
         epochs: Int = 100,
@@ -404,7 +491,9 @@ public struct NetworkTrainingConfig: Sendable {
         lossFunction: LossFunction = .mse,
         shuffle: Bool = true,
         logInterval: Int = 10,
-        earlyStoppingPatience: Int = 0
+        earlyStoppingPatience: Int = 0,
+        optimizer: (any Optimizer)? = nil,
+        gradientClipping: Float? = nil
     ) {
         self.epochs = epochs
         self.batchSize = batchSize
@@ -413,6 +502,8 @@ public struct NetworkTrainingConfig: Sendable {
         self.shuffle = shuffle
         self.logInterval = logInterval
         self.earlyStoppingPatience = earlyStoppingPatience
+        self.optimizer = optimizer
+        self.gradientClipping = gradientClipping
     }
 }
 
@@ -428,10 +519,7 @@ public struct NetworkTrainingHistory: Codable, Sendable {
 /// Loss functions
 public enum LossFunction: String, Codable, Sendable {
     case mse = "mean_squared_error"
-    case mae = "mean_absolute_error"
     case crossEntropy = "cross_entropy"
-    case binaryCrossEntropy = "binary_cross_entropy"
-    case huber = "huber"
 }
 
 /// Neural network errors
