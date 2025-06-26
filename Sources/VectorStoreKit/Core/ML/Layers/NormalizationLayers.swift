@@ -104,7 +104,7 @@ public actor LayerNormLayer: NeuralLayer {
         
         // Use Metal kernel for layer normalization (computes stats and normalizes in one pass)
         let shaderLibrary = await metalPipeline.getShaderLibrary()
-        let pipeline = try shaderLibrary.pipeline(for: MLShaderLibrary.NormalizationFunction.layerNormForward.rawValue)
+        let pipeline = try await shaderLibrary.pipeline(for: MLShaderLibrary.NormalizationFunction.layerNormForward.rawValue)
         let commandQueue = await metalPipeline.getMetalCommandQueue()
         
         // Get gamma and beta before the async block if using affine
@@ -287,7 +287,7 @@ public actor LayerNormLayer: NeuralLayer {
         
         // Use Metal shader for efficient computation
         let shaderLibrary = await metalPipeline.getShaderLibrary()
-        let pipeline = try shaderLibrary.pipeline(for: MLShaderLibrary.NormalizationFunction.layerNormBackward.rawValue)
+        let pipeline = try await shaderLibrary.pipeline(for: MLShaderLibrary.NormalizationFunction.layerNormBackward.rawValue)
         let commandQueue = await metalPipeline.getMetalCommandQueue()
         
         // Get parameter gradient buffers if using affine
@@ -447,7 +447,7 @@ public actor GroupNormLayer: NeuralLayer {
         
         // Use Metal shader for group normalization
         let shaderLibrary = await metalPipeline.getShaderLibrary()
-        let pipeline = try shaderLibrary.pipeline(for: "groupnorm_forward")
+        let pipeline = try await shaderLibrary.pipeline(for: "groupnorm_forward")
         let commandQueue = await metalPipeline.getMetalCommandQueue()
         
         // Get affine parameters before async block
@@ -516,7 +516,7 @@ public actor GroupNormLayer: NeuralLayer {
         
         // Use Metal shader for backward pass
         let shaderLibrary = await metalPipeline.getShaderLibrary()
-        let pipeline = try shaderLibrary.pipeline(for: "groupnorm_backward")
+        let pipeline = try await shaderLibrary.pipeline(for: "groupnorm_backward")
         let commandQueue = await metalPipeline.getMetalCommandQueue()
         
         // Get affine parameters before async block
@@ -805,7 +805,7 @@ public actor BatchNormLayer: NeuralLayer {
         
         // Use Metal kernel for batch normalization
         let shaderLibrary = await metalPipeline.getShaderLibrary()
-        let pipeline = try shaderLibrary.pipeline(for: MLShaderLibrary.NormalizationFunction.batchNormForward.rawValue)
+        let pipeline = try await shaderLibrary.pipeline(for: MLShaderLibrary.NormalizationFunction.batchNormForward.rawValue)
         let commandQueue = await metalPipeline.getMetalCommandQueue()
         
         try await commandQueue.submitAsync { commandBuffer in
@@ -875,7 +875,7 @@ public actor BatchNormLayer: NeuralLayer {
         }
         
         let shaderLibrary = await metalPipeline.getShaderLibrary()
-        let pipeline = try shaderLibrary.pipeline(for: MLShaderLibrary.NormalizationFunction.batchNormUpdateRunningStats.rawValue)
+        let pipeline = try await shaderLibrary.pipeline(for: MLShaderLibrary.NormalizationFunction.batchNormUpdateRunningStats.rawValue)
         let commandQueue = await metalPipeline.getMetalCommandQueue()
         
         try await commandQueue.submitAsync { commandBuffer in
@@ -926,7 +926,7 @@ public actor BatchNormLayer: NeuralLayer {
         
         // Use Metal kernel for backward pass
         let shaderLibrary = await metalPipeline.getShaderLibrary()
-        let pipeline = try shaderLibrary.pipeline(for: MLShaderLibrary.NormalizationFunction.batchNormBackward.rawValue)
+        let pipeline = try await shaderLibrary.pipeline(for: MLShaderLibrary.NormalizationFunction.batchNormBackward.rawValue)
         let commandQueue = await metalPipeline.getMetalCommandQueue()
         
         try await commandQueue.submitAsync { commandBuffer in

@@ -22,13 +22,13 @@ public struct AdaptiveDistance {
     public struct Context {
         public let dataStatistics: DataStatistics
         public let queryHistory: QueryHistory
-        public let performanceMetrics: PerformanceMetrics
+        public let performanceMetrics: AdaptivePerformanceMetrics
         public let userFeedback: UserFeedback?
         
         public init(
             dataStatistics: DataStatistics,
             queryHistory: QueryHistory,
-            performanceMetrics: PerformanceMetrics,
+            performanceMetrics: AdaptivePerformanceMetrics,
             userFeedback: UserFeedback? = nil
         ) {
             self.dataStatistics = dataStatistics
@@ -501,7 +501,7 @@ public struct AdaptiveDistance {
             let context = Context(
                 dataStatistics: DataStatistics(from: analysis),
                 queryHistory: QueryHistory(),
-                performanceMetrics: PerformanceMetrics()
+                performanceMetrics: AdaptivePerformanceMetrics()
             )
             
             let adaptiveNeighbors = findNearestNeighborsAdaptive(
@@ -626,7 +626,7 @@ public struct QueryHistory {
 }
 
 /// Performance metrics for different distance functions
-public struct PerformanceMetrics {
+public struct AdaptivePerformanceMetrics {
     public let metricPerformance: [String: MetricPerformance]
     
     public init(metricPerformance: [String: MetricPerformance] = [:]) {

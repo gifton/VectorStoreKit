@@ -84,7 +84,7 @@ public actor BaseNeuralLayer {
     // MARK: - Properties
     public let metalPipeline: MetalMLPipeline
     public private(set) var isTraining: Bool = true
-    private let parameterStore: ParameterStore
+    internal let parameterStore: ParameterStore
     
     // MARK: - Initialization
     public init(metalPipeline: MetalMLPipeline) async throws {
@@ -487,14 +487,14 @@ public actor MetalMLPipeline {
     // Memory pressure monitoring
     private var memoryPressureSource: DispatchSourceMemoryPressure?
     
-    public init(device: MTLDevice) throws {
+    public init(device: MTLDevice) async throws {
         self.device = device
         guard let commandQueue = device.makeCommandQueue() else {
             throw MetalMLError.commandQueueCreationFailed
         }
         self.commandQueue = commandQueue
         self.metalCommandQueue = MetalCommandQueue(device: device)
-        self.shaderLibrary = try MLShaderLibrary(device: device)
+        self.shaderLibrary = try await MLShaderLibrary(device: device)
         self.operations = MetalMLOperations(
             device: device,
             commandQueue: commandQueue,

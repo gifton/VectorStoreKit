@@ -4,6 +4,9 @@
 
 import Foundation
 
+/// Type alias for backward compatibility and convenience
+public typealias LRUCache = GenericLRUCache
+
 /// Generic thread-safe LRU cache
 public final class GenericLRUCache<Key: Hashable, Value>: @unchecked Sendable {
     // MARK: - Node Definition
@@ -133,6 +136,11 @@ public final class GenericLRUCache<Key: Hashable, Value>: @unchecked Sendable {
         defer { lock.unlock() }
         
         return cache[key] != nil
+    }
+    
+    /// Get current cache size (async version for compatibility)
+    public func currentSize() async -> Int {
+        return count
     }
     
     // MARK: - Private Methods

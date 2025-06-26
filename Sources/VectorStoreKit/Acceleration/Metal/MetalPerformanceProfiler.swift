@@ -24,10 +24,10 @@ public actor MetalPerformanceProfiler {
     private var kernelProfiles: [String: KernelProfile] = [:]
     private var memoryProfiles: [MemoryProfileEntry] = []
     
-    // GPU timestamp support
-    private let supportsTimestamps: Bool
-    private var timestampBuffer: MTLBuffer?
-    private let maxTimestamps = 1000
+    // GPU timing tracking
+    private let supportsGPUTiming: Bool
+    private var kernelTimings: [String: [TimeInterval]] = [:]
+    private let maxTimingHistory = 1000
     
     // Performance counters
     private var counterSets: [MTLCounterSet]?
@@ -42,22 +42,21 @@ public actor MetalPerformanceProfiler {
         self.enabled = enabled
         self.signpostLog = OSLog(subsystem: "VectorStoreKit", category: .pointsOfInterest)
         
-        // Check timestamp support
-        self.supportsTimestamps = await device.device.supportsCounterSampling(.timestamp)
+        // Check GPU timing support based on OS version
+        // GPU timing (gpuStartTime/gpuEndTime) is available on macOS 10.15+ and iOS 10.3+
+        if #available(macOS 10.15, iOS 10.3, *) {
+            self.supportsGPUTiming = true
+        } else {
+            self.supportsGPUTiming = false
+            logger.info("GPU timing not available on this OS version - will use CPU timing")
+        }
         
-        if enabled && supportsTimestamps {
-            // Allocate timestamp buffer
-            let timestampSize = MemoryLayout<MTLTimestamp>.size * maxTimestamps * 2
-            self.timestampBuffer = await device.device.makeBuffer(
-                length: timestampSize,
-                options: .storageModeShared
-            )
-            
+        if enabled {
             // Initialize performance counters if available
             await initializePerformanceCounters()
         }
         
-        logger.info("Performance profiler initialized - timestamps: \(self.supportsTimestamps)")
+        logger.info("Performance profiler initialized - GPU timing: \(self.supportsGPUTiming)")
     }
     
     // MARK: - Profiling Control
@@ -105,6 +104,10 @@ public actor MetalPerformanceProfiler {
     }
     
     /// Profile a Metal command buffer execution
+    /// 
+    /// - Important: GPU timing is only available on macOS 10.15+ and iOS 10.3+.
+    ///   On older systems, only CPU timing is available.
+    /// - Note: For precise kernel-level timing, use Metal System Trace in Instruments.
     public func profileCommandBuffer(
         _ commandBuffer: MTLCommandBuffer,
         label: String,
@@ -113,17 +116,25 @@ public actor MetalPerformanceProfiler {
         guard enabled else { return nil }
         
         let startCPUTime = CFAbsoluteTimeGetCurrent()
-        var gpuStartTime: CFAbsoluteTime = 0
-        var gpuEndTime: CFAbsoluteTime = 0
+        var gpuStartTime: TimeInterval = 0
+        var gpuEndTime: TimeInterval = 0
+        var hasGPUTiming = false
         
-        // Add GPU timestamp handlers if supported
-        if supportsTimestamps {
-            commandBuffer.addScheduledHandler { buffer in
-                gpuStartTime = buffer.gpuStartTime
-            }
-            
-            commandBuffer.addCompletedHandler { buffer in
-                gpuEndTime = buffer.gpuEndTime
+        // Add GPU timing handlers if available
+        if supportsGPUTiming {
+            commandBuffer.addCompletedHandler { [weak self] buffer in
+                // GPU timing properties are available on macOS 10.15+ and iOS 10.3+
+                if #available(macOS 10.15, iOS 10.3, *) {
+                    gpuStartTime = buffer.gpuStartTime
+                    gpuEndTime = buffer.gpuEndTime
+                    hasGPUTiming = gpuStartTime > 0 && gpuEndTime > 0
+                    
+                    if hasGPUTiming {
+                        self?.logger.debug("GPU timing available: start=\(gpuStartTime), end=\(gpuEndTime)")
+                    }
+                } else {
+                    self?.logger.debug("GPU timing not available on this OS version")
+                }
             }
         }
         
@@ -140,7 +151,23 @@ public actor MetalPerformanceProfiler {
         
         // Calculate timings
         let cpuTime = endCPUTime - startCPUTime
-        let gpuTime = supportsTimestamps ? (gpuEndTime - gpuStartTime) : cpuTime
+        let gpuTime: TimeInterval
+        
+        if hasGPUTiming && gpuEndTime > gpuStartTime {
+            gpuTime = gpuEndTime - gpuStartTime
+            
+            // Record kernel timings if GPU timing is available
+            if commandBuffer.status == .completed && kernels.count > 0 {
+                let kernelTime = gpuTime / Double(kernels.count)
+                for kernel in kernels {
+                    recordKernelTiming(kernel.name, duration: kernelTime)
+                }
+            }
+        } else {
+            // Fallback: estimate GPU time as CPU time (this is just an approximation)
+            gpuTime = cpuTime
+            logger.debug("Using CPU time as GPU time estimate (no GPU timing available)")
+        }
         
         let profile = CommandBufferProfile(
             label: label,
@@ -154,33 +181,53 @@ public actor MetalPerformanceProfiler {
         logger.debug("""
             Command buffer '\(label)': \
             CPU=\(cpuTime * 1000)ms, \
-            GPU=\(gpuTime * 1000)ms, \
+            GPU=\(hasGPUTiming ? "\(gpuTime * 1000)" : "~\(gpuTime * 1000)")ms, \
             \(kernels.count) kernels
             """)
         
         return profile
     }
     
-    /// Add GPU timestamp markers
-    public func addTimestampMarker(
-        to encoder: MTLComputeCommandEncoder,
-        label: String,
-        at location: TimestampLocation
-    ) -> Int? {
-        guard enabled && supportsTimestamps,
-              let buffer = timestampBuffer else { return nil }
+    /// Profile kernel execution with timing
+    public func profileKernelExecution(
+        _ encoder: MTLComputeCommandEncoder,
+        kernelName: String,
+        threadgroupSize: MTLSize,
+        gridSize: MTLSize
+    ) {
+        guard enabled else { return }
         
-        let index = operationProfiles.count % maxTimestamps
-        let offset = index * MemoryLayout<MTLTimestamp>.size * 2
+        // Calculate total threads
+        let totalThreads = gridSize.width * gridSize.height * gridSize.depth
         
-        switch location {
-        case .begin:
-            encoder.writeTimestamp(to: buffer, atIndex: offset)
-        case .end:
-            encoder.writeTimestamp(to: buffer, atIndex: offset + MemoryLayout<MTLTimestamp>.size)
+        // Record kernel descriptor for later timing analysis
+        let descriptor = KernelDescriptor(
+            name: kernelName,
+            totalThreads: totalThreads
+        )
+        
+        // The actual timing will be captured via command buffer completion handler
+        Task {
+            await recordKernelExecution(descriptor)
         }
+    }
+    
+    /// Get kernel timing statistics
+    public func getKernelTimingStats(for kernelName: String) -> KernelTimingStats? {
+        guard let timings = kernelTimings[kernelName], !timings.isEmpty else { return nil }
         
-        return index
+        let sorted = timings.sorted()
+        let count = timings.count
+        let total = timings.reduce(0, +)
+        
+        return KernelTimingStats(
+            count: count,
+            totalTime: total,
+            averageTime: total / Double(count),
+            minTime: sorted.first!,
+            maxTime: sorted.last!,
+            medianTime: sorted[count / 2]
+        )
     }
     
     // MARK: - Memory Profiling
@@ -298,6 +345,7 @@ public actor MetalPerformanceProfiler {
         operationProfiles.removeAll()
         kernelProfiles.removeAll()
         memoryProfiles.removeAll()
+        kernelTimings.removeAll()
         currentCounterSample = nil
         
         logger.info("Profiling data reset")
@@ -315,8 +363,8 @@ public actor MetalPerformanceProfiler {
             counterSet.name.contains("GPU") || counterSet.name.contains("Performance")
         }
         
-        if !counterSets!.isEmpty {
-            logger.info("Found \(counterSets!.count) performance counter sets")
+        if !self.counterSets!.isEmpty {
+            logger.info("Found \(self.counterSets!.count) performance counter sets")
         }
     }
     
@@ -327,6 +375,19 @@ public actor MetalPerformanceProfiler {
         
         kernelProfiles[kernel.name]?.executionCount += 1
         kernelProfiles[kernel.name]?.totalThreads += kernel.totalThreads
+    }
+    
+    private func recordKernelTiming(_ kernelName: String, duration: TimeInterval) {
+        if kernelTimings[kernelName] == nil {
+            kernelTimings[kernelName] = []
+        }
+        
+        kernelTimings[kernelName]?.append(duration)
+        
+        // Maintain history limit per kernel
+        if let count = kernelTimings[kernelName]?.count, count > maxTimingHistory {
+            kernelTimings[kernelName]?.removeFirst(count - maxTimingHistory)
+        }
     }
     
     private func calculateCurrentMemoryUsage() -> Int {
@@ -361,7 +422,7 @@ public actor MetalPerformanceProfiler {
 // MARK: - Supporting Types
 
 /// Profiling category for operations
-public enum ProfilingCategory: String, CaseIterable {
+public enum ProfilingCategory: String, CaseIterable, Sendable {
     case distanceComputation = "Distance"
     case indexing = "Indexing"
     case quantization = "Quantization"
@@ -412,50 +473,54 @@ public struct CommandBufferProfile: Sendable {
 }
 
 /// Memory allocation type
-public enum MemoryAllocationType: String {
+public enum MemoryAllocationType: String, Sendable {
     case buffer = "Buffer"
     case texture = "Texture"
     case heap = "Heap"
     case cache = "Cache"
 }
 
-/// Timestamp location
-public enum TimestampLocation {
-    case begin
-    case end
+/// Kernel timing statistics
+public struct KernelTimingStats: Sendable {
+    public let count: Int
+    public let totalTime: TimeInterval
+    public let averageTime: TimeInterval
+    public let minTime: TimeInterval
+    public let maxTime: TimeInterval
+    public let medianTime: TimeInterval
 }
 
 // MARK: - Internal Types
 
 /// Operation profile data
-private struct OperationProfile {
-    let id: UUID
-    let name: String
-    let category: ProfilingCategory
-    let startTime: CFAbsoluteTime
-    var endTime: CFAbsoluteTime?
+public struct OperationProfile: Sendable, Codable {
+    public let id: UUID
+    public let name: String
+    public let category: ProfilingCategory
+    public let startTime: CFAbsoluteTime
+    public var endTime: CFAbsoluteTime?
     // Metadata is not Codable, so we exclude it from encoding
-    var metrics: ProfilerOperationMetrics?
+    public var metrics: ProfilerOperationMetrics?
     
-    var duration: TimeInterval? {
+    public var duration: TimeInterval? {
         guard let endTime = endTime else { return nil }
         return endTime - startTime
     }
 }
 
 /// Kernel execution profile
-private struct KernelProfile: Codable {
-    var executionCount: Int = 0
-    var totalThreads: Int = 0
+public struct KernelProfile: Sendable, Codable {
+    public var executionCount: Int = 0
+    public var totalThreads: Int = 0
 }
 
 /// Memory profile entry
-private struct MemoryProfileEntry {
-    let timestamp: Date
-    let allocationType: MemoryAllocationType
-    let size: Int
-    let label: String?
-    let isAllocation: Bool
+public struct MemoryProfileEntry: Sendable, Codable {
+    public let timestamp: Date
+    public let allocationType: MemoryAllocationType
+    public let size: Int
+    public let label: String?
+    public let isAllocation: Bool
 }
 
 // MARK: - Report Types
@@ -527,14 +592,33 @@ extension Array where Element == TimeInterval {
 // Make types Codable for export
 extension PerformanceSummary: Codable {}
 extension CategorySummary: Codable {}
-extension OperationSummary: Codable {}
+extension OperationSummary: Codable {
+    enum CodingKeys: String, CodingKey {
+        case name, duration
+        // metrics intentionally excluded as it's not Codable
+    }
+    
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.name = try container.decode(String.self, forKey: .name)
+        self.duration = try container.decode(TimeInterval.self, forKey: .duration)
+        self.metrics = nil // Cannot decode non-Codable metrics
+    }
+    
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(name, forKey: .name)
+        try container.encode(duration, forKey: .duration)
+        // metrics intentionally not encoded
+    }
+}
 extension KernelSummary: Codable {}
-extension OperationProfile: Codable {
+extension OperationProfile {
     enum CodingKeys: String, CodingKey {
         case id, name, category, startTime, endTime
     }
 }
-extension MemoryProfileEntry: Codable {}
-extension ProfilerOperationMetrics: Codable {}
+// MemoryProfileEntry Codable conformance is in struct definition
+// ProfilerOperationMetrics intentionally not Codable due to PercentileData
 extension ProfilingCategory: Codable {}
 extension MemoryAllocationType: Codable {}

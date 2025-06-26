@@ -15,9 +15,7 @@ import os
 // Note: MemoryPressureLevel is imported from MemoryManagement.swift
 
 /// Memory pressure aware resource manager
-public protocol MemoryPressureAware: AnyObject {
-    func handleMemoryPressure(level: MemoryPressureLevel)
-}
+// MemoryPressureAware protocol is defined in MemoryProtocols.swift
 
 // MARK: - Safe Cache-Aligned Vector Storage
 
@@ -676,8 +674,11 @@ public actor SafeDistanceComputationBufferPool: MemoryPressureAware {
     private let logger = os.Logger(subsystem: "VectorStoreKit", category: "BufferPool")
     
     // Memory pressure handling
-    private var currentPressureLevel: MemoryPressureLevel = .normal
+    private var currentPressureLevel: SystemMemoryPressure = .normal
     private var shouldReduceFootprint: Bool { currentPressureLevel != .normal }
+    private var pressureEventCount: Int = 0
+    private var lastPressureHandled: Date?
+    private var peakMemoryUsage: Int = 0
     
     public init(bufferSize: Int, maxBuffers: Int = 100) {
         self.bufferSize = bufferSize
@@ -732,13 +733,9 @@ public actor SafeDistanceComputationBufferPool: MemoryPressureAware {
     
     // MARK: - MemoryPressureAware
     
-    public nonisolated func handleMemoryPressure(level: MemoryPressureLevel) {
-        Task {
-            await self.updateMemoryPressure(level)
-        }
-    }
-    
-    private func updateMemoryPressure(_ level: MemoryPressureLevel) async {
+    public func handleMemoryPressure(_ level: SystemMemoryPressure) async {
+        pressureEventCount += 1
+        lastPressureHandled = Date()
         currentPressureLevel = level
         
         switch level {
@@ -752,10 +749,26 @@ public actor SafeDistanceComputationBufferPool: MemoryPressureAware {
         case .critical:
             logger.error("Memory pressure critical - clearing pool")
             await clear()
-        case .urgent:
-            logger.error("Memory pressure urgent - clearing pool immediately")
-            await clear()
         }
+    }
+    
+    public func getCurrentMemoryUsage() async -> Int {
+        let currentUsage = allocatedCount * bufferSize * MemoryLayout<Float>.stride
+        peakMemoryUsage = max(peakMemoryUsage, currentUsage)
+        return currentUsage
+    }
+    
+    public func getMemoryStatistics() async -> MemoryComponentStatistics {
+        let currentUsage = await getCurrentMemoryUsage()
+        
+        return MemoryComponentStatistics(
+            componentName: "SafeDistanceComputationBufferPool",
+            currentMemoryUsage: currentUsage,
+            peakMemoryUsage: peakMemoryUsage,
+            pressureEventCount: pressureEventCount,
+            lastPressureHandled: lastPressureHandled,
+            averageResponseTime: 0 // We don't track response time for now
+        )
     }
     
     // Pool statistics for monitoring

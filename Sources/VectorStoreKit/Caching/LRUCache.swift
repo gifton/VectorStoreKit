@@ -43,7 +43,7 @@ public actor BasicLRUVectorCache<Vector: SIMD & Sendable>: VectorCache where Vec
     private var totalAccessTime: TimeInterval = 0
     
     // Access history for pattern analysis
-    private var accessHistory = CacheAccessRingBuffer(capacity: 1000)
+    private var accessHistory: CacheAccessRingBuffer = CacheAccessRingBuffer(capacity: 1000)
     
     // Performance analyzer
     private let performanceAnalyzer = CachePerformanceAnalyzer<Vector>()
@@ -181,6 +181,10 @@ public actor BasicLRUVectorCache<Vector: SIMD & Sendable>: VectorCache where Vec
         cache[id] != nil
     }
     
+    public func currentSize() async -> Int {
+        cache.count
+    }
+    
     // MARK: - Advanced Operations (Medium Complexity)
     
     public func preload(ids: [VectorID]) async {
@@ -218,7 +222,7 @@ public actor BasicLRUVectorCache<Vector: SIMD & Sendable>: VectorCache where Vec
                 // Insert if space available
                 if currentMemoryUsage + entrySize <= configuration.maxMemory {
                     let entry = CacheEntry(vector: vector, priority: priority)
-                    let node = LRUNode(id: id, entry: entry)
+                    let node = LRUNode<Vector>(id: id, entry: entry)
                     cache[id] = node
                     currentMemoryUsage += entrySize
                     addToFront(node)
@@ -302,7 +306,7 @@ public actor BasicLRUVectorCache<Vector: SIMD & Sendable>: VectorCache where Vec
                     )
                 )
                 
-                let node = LRUNode(id: id, entry: entry)
+                let node = LRUNode<Vector>(id: id, entry: entry)
                 cache[id] = node
                 currentMemoryUsage += entrySize
                 

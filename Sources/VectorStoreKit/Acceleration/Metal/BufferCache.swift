@@ -78,7 +78,12 @@ public actor BufferCache {
     private var accessOrder: [(key: String, lastAccess: Date)] = []
     
     /// Statistics for monitoring cache efficiency
-    private var stats = BufferCacheStatistics()
+    private var storeCount: Int = 0
+    private var totalBytesStored: Int = 0
+    private var missCount: Int = 0
+    private var hitCount: Int = 0
+    private var evictionCount: Int = 0
+    private var clearCount: Int = 0
     
     /// Logger for debugging and monitoring
     private let logger = Logger(subsystem: "VectorStoreKit", category: "BufferCache")
@@ -133,8 +138,8 @@ public actor BufferCache {
         accessOrder.append((key: key, lastAccess: metadata.lastAccessTime))
         
         // Update statistics
-        stats.storeCount += 1
-        stats.totalBytesStored += sizeInBytes
+        storeCount += 1
+        totalBytesStored += sizeInBytes
         
         logger.debug("Stored buffer '\(key)' (\(sizeInBytes / 1024)KB), current memory: \(self.currentMemory / 1_048_576)MB")
     }
@@ -144,7 +149,7 @@ public actor BufferCache {
     /// - Returns: The cached buffer if found, nil otherwise
     public func retrieve(for key: String) async -> MetalBuffer? {
         guard var metadata = cache[key] else {
-            stats.missCount += 1
+            missCount += 1
             return nil
         }
         
@@ -157,7 +162,7 @@ public actor BufferCache {
         updateAccessOrder(key: key, newTime: metadata.lastAccessTime)
         
         // Update statistics
-        stats.hitCount += 1
+        hitCount += 1
         
         logger.debug("Retrieved buffer '\(key)', access count: \(metadata.accessCount)")
         
@@ -212,8 +217,7 @@ public actor BufferCache {
         accessOrder.removeFirst()
         
         // Update statistics
-        stats.evictionCount += 1
-        stats.totalBytesEvicted += metadata.sizeInBytes
+        evictionCount += 1
         
         logger.info("Evicted buffer '\(oldest.key)' (\(metadata.sizeInBytes / 1024)KB), freed memory: \(self.currentMemory / 1_048_576)MB")
     }
@@ -227,18 +231,29 @@ public actor BufferCache {
         accessOrder.removeAll()
         currentMemory = 0
         
-        stats.clearCount += 1
+        clearCount += 1
         
         logger.info("Cleared \(totalBuffers) buffers, freed \(totalMemory / 1_048_576)MB")
     }
     
     /// Returns current cache statistics
     public func getStatistics() async -> BufferCacheStatistics {
-        var stats = self.stats
-        stats.currentBufferCount = cache.count
-        stats.currentMemoryUsage = currentMemory
-        stats.memoryLimit = maxMemory
-        return stats
+        let hitRate = (hitCount + missCount) > 0 ? Float(hitCount) / Float(hitCount + missCount) : 0.0
+        return BufferCacheStatistics(
+            totalBuffers: cache.count,
+            totalMemory: currentMemory,
+            hitRate: hitRate,
+            evictionCount: evictionCount,
+            storeCount: storeCount,
+            totalBytesStored: totalBytesStored,
+            missCount: missCount,
+            hitCount: hitCount,
+            totalBytesEvicted: 0, // Not currently tracked
+            clearCount: clearCount,
+            currentBufferCount: cache.count,
+            currentMemoryUsage: currentMemory,
+            memoryLimit: maxMemory
+        )
     }
     
     /// Returns detailed cache state for debugging

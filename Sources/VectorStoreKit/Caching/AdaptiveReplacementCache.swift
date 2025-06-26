@@ -222,6 +222,10 @@ where Vector.Scalar: BinaryFloatingPoint {
         cache[id] != nil
     }
     
+    public func currentSize() async -> Int {
+        cache.count
+    }
+    
     // MARK: - Advanced Operations
     
     public func preload(ids: [VectorID]) async {

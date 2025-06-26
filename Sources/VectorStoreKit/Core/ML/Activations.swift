@@ -316,12 +316,12 @@ public actor ActivationLayer: NeuralLayer {
         
         // Load forward pipeline
         forwardPipeline = try await library.makeComputePipeline(
-            functionName: activation.forwardFunctionName
+            for: activation.forwardFunctionName
         )
         
         // Load backward pipeline
         backwardPipeline = try await library.makeComputePipeline(
-            functionName: activation.backwardFunctionName
+            for: activation.backwardFunctionName
         )
     }
 }

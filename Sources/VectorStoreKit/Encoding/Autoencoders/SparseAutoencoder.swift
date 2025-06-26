@@ -82,7 +82,7 @@ public actor SparseAutoencoder: Autoencoder {
             guard let device = MTLCreateSystemDefaultDevice() else {
                 throw MetalMLError.commandQueueCreationFailed
             }
-            pipeline = try MetalMLPipeline(device: device)
+            pipeline = try await MetalMLPipeline(device: device)
         }
         
         // Build encoder network

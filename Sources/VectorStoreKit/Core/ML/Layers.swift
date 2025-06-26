@@ -188,8 +188,8 @@ public actor DenseLayer: NeuralLayer {
         
         // Use outer product for weight gradients
         let shaderLibrary = await metalPipeline.getShaderLibrary()
-        let outerProductPipeline = try shaderLibrary.pipeline(for: MLShaderLibrary.MatrixOperation.outerProduct.rawValue)
-        let copyPipeline = try shaderLibrary.pipeline(for: MLShaderLibrary.MatrixOperation.copyMatrix.rawValue)
+        let outerProductPipeline = try await shaderLibrary.pipeline(for: MLShaderLibrary.MatrixOperation.outerProduct.rawValue)
+        let copyPipeline = try await shaderLibrary.pipeline(for: MLShaderLibrary.MatrixOperation.copyMatrix.rawValue)
         
         let commandQueue = await metalPipeline.getMetalCommandQueue()
         
@@ -199,7 +199,7 @@ public actor DenseLayer: NeuralLayer {
             }
             
             // Use accumulation version to add to existing gradients
-            let accumulatePipeline = try shaderLibrary.pipeline(for: MLShaderLibrary.MatrixOperation.outerProductAccumulate.rawValue)
+            let accumulatePipeline = try await shaderLibrary.pipeline(for: MLShaderLibrary.MatrixOperation.outerProductAccumulate.rawValue)
             encoder.setComputePipelineState(accumulatePipeline)
             encoder.setBuffer(gradPreActivation.buffer, offset: 0, index: 0)  // [outputSize x 1]
             encoder.setBuffer(input.buffer, offset: 0, index: 1)               // [inputSize x 1]
@@ -226,7 +226,7 @@ public actor DenseLayer: NeuralLayer {
             }
             
             // Use accumulate operation for bias gradients
-            let biasAccumulatePipeline = try shaderLibrary.pipeline(for: MLShaderLibrary.OptimizationOperation.accumulateGradients.rawValue)
+            let biasAccumulatePipeline = try await shaderLibrary.pipeline(for: MLShaderLibrary.OptimizationOperation.accumulateGradients.rawValue)
             copyEncoder.setComputePipelineState(biasAccumulatePipeline)
             copyEncoder.setBuffer(biasGrad.buffer, offset: 0, index: 0)  // Existing gradients
             copyEncoder.setBuffer(gradPreActivation.buffer, offset: 0, index: 1)  // New gradients to add
@@ -250,7 +250,7 @@ public actor DenseLayer: NeuralLayer {
         let transposedWeights = try await allocateBuffer(size: weights.count)
         
         // Use transpose kernel
-        let transposePipeline = try shaderLibrary.pipeline(for: MLShaderLibrary.MatrixOperation.transpose.rawValue)
+        let transposePipeline = try await shaderLibrary.pipeline(for: MLShaderLibrary.MatrixOperation.transpose.rawValue)
         
         try await commandQueue.submitAsync { commandBuffer in
             guard let transposeEncoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -369,7 +369,7 @@ public actor DenseLayer: NeuralLayer {
             let commandQueue = await metalPipeline.getMetalCommandQueue()
             
             do {
-                let zeroPipeline = try shaderLibrary.pipeline(for: MLShaderLibrary.OptimizationOperation.zeroGradients.rawValue)
+                let zeroPipeline = try await shaderLibrary.pipeline(for: MLShaderLibrary.OptimizationOperation.zeroGradients.rawValue)
                 
                 try await commandQueue.submitAsync { commandBuffer in
                     guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -401,7 +401,7 @@ public actor DenseLayer: NeuralLayer {
             let commandQueue = await metalPipeline.getMetalCommandQueue()
             
             do {
-                let zeroPipeline = try shaderLibrary.pipeline(for: MLShaderLibrary.OptimizationOperation.zeroGradients.rawValue)
+                let zeroPipeline = try await shaderLibrary.pipeline(for: MLShaderLibrary.OptimizationOperation.zeroGradients.rawValue)
                 
                 try await commandQueue.submitAsync { commandBuffer in
                     guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -437,7 +437,7 @@ public actor DenseLayer: NeuralLayer {
             let commandQueue = await metalPipeline.getMetalCommandQueue()
             
             do {
-                let scalePipeline = try shaderLibrary.pipeline(for: MLShaderLibrary.OptimizationOperation.scaleGradients.rawValue)
+                let scalePipeline = try await shaderLibrary.pipeline(for: MLShaderLibrary.OptimizationOperation.scaleGradients.rawValue)
                 
                 try await commandQueue.submitAsync { commandBuffer in
                     guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -471,7 +471,7 @@ public actor DenseLayer: NeuralLayer {
             let commandQueue = await metalPipeline.getMetalCommandQueue()
             
             do {
-                let scalePipeline = try shaderLibrary.pipeline(for: MLShaderLibrary.OptimizationOperation.scaleGradients.rawValue)
+                let scalePipeline = try await shaderLibrary.pipeline(for: MLShaderLibrary.OptimizationOperation.scaleGradients.rawValue)
                 
                 try await commandQueue.submitAsync { commandBuffer in
                     guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -600,7 +600,7 @@ public actor DropoutLayer: NeuralLayer {
         
         // Use Metal shader for dropout
         let shaderLibrary = await metalPipeline.getShaderLibrary()
-        let pipeline = try shaderLibrary.pipeline(for: "dropout_forward")
+        let pipeline = try await shaderLibrary.pipeline(for: "dropout_forward")
         let commandQueue = await metalPipeline.getMetalCommandQueue()
         
         try await commandQueue.submitAsync { commandBuffer in
@@ -637,7 +637,7 @@ public actor DropoutLayer: NeuralLayer {
         let gradInput = try await allocateBuffer(size: gradOutput.count)
         
         let shaderLibrary = await metalPipeline.getShaderLibrary()
-        let pipeline = try shaderLibrary.pipeline(for: "dropout_backward")
+        let pipeline = try await shaderLibrary.pipeline(for: "dropout_backward")
         let commandQueue = await metalPipeline.getMetalCommandQueue()
         
         try await commandQueue.submitAsync { commandBuffer in

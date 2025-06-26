@@ -33,7 +33,7 @@ public actor VectorMLPipeline {
         self.device = metalDevice
         
         // Initialize Metal ML pipeline
-        self.metalPipeline = try MetalMLPipeline(device: metalDevice)
+        self.metalPipeline = try await MetalMLPipeline(device: metalDevice)
         
         // Initialize components
         self.encoder = try await VectorEncoder(metalPipeline: metalPipeline)

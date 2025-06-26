@@ -144,7 +144,7 @@ final class AdvancedDistanceMetricsTests: XCTestCase {
                 averageNearestNeighborDistance: 1.0
             ),
             queryHistory: QueryHistory(),
-            performanceMetrics: PerformanceMetrics()
+            performanceMetrics: AdaptivePerformanceMetrics()
         )
         
         let distance = adaptive.distance(vector1, vector2, context: context)
@@ -176,7 +176,7 @@ final class AdvancedDistanceMetricsTests: XCTestCase {
                 averageNearestNeighborDistance: 1.0
             ),
             queryHistory: QueryHistory(),
-            performanceMetrics: PerformanceMetrics()
+            performanceMetrics: AdaptivePerformanceMetrics()
         )
         
         let denseContext = AdaptiveDistance.Context(
@@ -187,7 +187,7 @@ final class AdvancedDistanceMetricsTests: XCTestCase {
                 averageNearestNeighborDistance: 1.0
             ),
             queryHistory: QueryHistory(),
-            performanceMetrics: PerformanceMetrics()
+            performanceMetrics: AdaptivePerformanceMetrics()
         )
         
         let adaptiveSparse = AdaptiveDistance(strategy: .dataDistribution)
@@ -252,7 +252,7 @@ final class AdvancedDistanceMetricsTests: XCTestCase {
                 averageNearestNeighborDistance: 1.0
             ),
             queryHistory: QueryHistory(),
-            performanceMetrics: PerformanceMetrics()
+            performanceMetrics: AdaptivePerformanceMetrics()
         )
         
         let adaptiveDist = try await DistanceComputation512.computeDistance(
@@ -290,7 +290,7 @@ final class AdvancedDistanceMetricsTests: XCTestCase {
                 averageNearestNeighborDistance: 1.0
             ),
             queryHistory: QueryHistory(),
-            performanceMetrics: PerformanceMetrics()
+            performanceMetrics: AdaptivePerformanceMetrics()
         )
         
         let adaptiveBatch = try await DistanceComputation512.batchComputeDistance(

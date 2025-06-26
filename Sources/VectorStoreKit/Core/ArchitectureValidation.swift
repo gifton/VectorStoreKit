@@ -1,6 +1,9 @@
 import Foundation
 import os
 import QuartzCore
+#if canImport(Darwin)
+import Darwin
+#endif
 
 // MARK: - Validation Types
 
@@ -510,6 +513,7 @@ final class MemoryValidator: Validator {
     }
     
     private func getMemoryInfo() async -> MemoryInfo {
+        #if canImport(Darwin)
         var info = mach_task_basic_info()
         var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size) / 4
         
@@ -528,6 +532,7 @@ final class MemoryValidator: Validator {
                 virtualSize: Int(info.virtual_size)
             )
         }
+        #endif
         
         return MemoryInfo(residentSize: 0, virtualSize: 0)
     }

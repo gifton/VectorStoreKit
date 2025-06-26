@@ -169,10 +169,15 @@ public actor EnhancedBufferPool: MemoryPool, MemoryManagedBufferPool {
             byteCount: alignedSize,
             alignment: actualAlignment
         ) else {
-            throw VectorStoreError.allocationFailed(
-                size: alignedSize,
-                reason: "Failed to allocate buffer",
-                availableMemory: totalBytesAllocated - currentBytesInUse
+            throw VectorStoreError(
+                category: .memoryAllocation,
+                code: .allocationFailed,
+                message: "Failed to allocate buffer of size \(alignedSize)",
+                context: [
+                    "size": alignedSize,
+                    "reason": "Failed to allocate buffer",
+                    "availableMemory": totalBytesAllocated - currentBytesInUse
+                ]
             )
         }
         

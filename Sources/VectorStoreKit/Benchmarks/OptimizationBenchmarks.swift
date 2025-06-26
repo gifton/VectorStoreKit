@@ -27,7 +27,7 @@ public final class OptimizationBenchmarks {
     /// Compare original vs optimized distance computation
     public static func benchmarkDistanceComputation() async throws {
         print("\n🚀 Distance Computation Optimization Benchmarks")
-        print("=" * 60)
+        print(String(repeating: "=", count: 60))
         
         let dimensions = [128, 256, 512, 1024]
         let vectorCounts = [1000, 10000, 100000]
@@ -56,14 +56,14 @@ public final class OptimizationBenchmarks {
                 let simdImprovement = originalTime / simdTime
                 
                 print("    Original:  \(String(format: "%.3f", originalTime))s")
-                print("    Optimized: \(String(format: "%.3f", optimizedTime))s (%.1fx faster)".format(improvement))
-                print("    SIMD:      \(String(format: "%.3f", simdTime))s (%.1fx faster)".format(simdImprovement))
+                print("    Optimized: \(String(format: "%.3f", optimizedTime))s (\(String(format: "%.1f", improvement))x faster)")
+                print("    SIMD:      \(String(format: "%.3f", simdTime))s (\(String(format: "%.1f", simdImprovement))x faster)")
                 
                 // Memory usage comparison
                 let (originalMemory, optimizedMemory) = await compareMemoryUsage(vectorCount: count, dimensions: dim)
                 let memoryReduction = (1.0 - Double(optimizedMemory) / Double(originalMemory)) * 100
                 
-                print("    Memory:    \(originalMemory.bytesToString()) → \(optimizedMemory.bytesToString()) (%.1f%% reduction)".format(memoryReduction))
+                print("    Memory:    \(originalMemory.bytesToString()) → \(optimizedMemory.bytesToString()) (\(String(format: "%.1f", memoryReduction))% reduction)")
             }
         }
     }
@@ -73,7 +73,7 @@ public final class OptimizationBenchmarks {
     /// Compare original vs optimized HNSW performance
     public static func benchmarkHNSWOptimizations() async throws {
         print("\n🔍 HNSW Index Optimization Benchmarks")
-        print("=" * 60)
+        print(String(repeating: "=", count: 60))
         
         let testConfigs = [
             (vectors: 10000, dimensions: 128, queries: 100),
@@ -99,14 +99,14 @@ public final class OptimizationBenchmarks {
             let originalBuildTime = await measureIndexConstruction(index: originalIndex, vectors: vectors)
             let optimizedBuildTime = await measureIndexConstruction(index: optimizedIndex, vectors: vectors)
             print("    Original:  \(String(format: "%.2f", originalBuildTime))s")
-            print("    Optimized: \(String(format: "%.2f", optimizedBuildTime))s (%.1fx faster)".format(originalBuildTime / optimizedBuildTime))
+            print("    Optimized: \(String(format: "%.2f", optimizedBuildTime))s (\(String(format: "%.1f", originalBuildTime / optimizedBuildTime))x faster)")
             
             // Benchmark search performance
             print("\n  Search Performance (avg per query):")
             let originalSearchTime = await measureSearchPerformance(index: originalIndex, queries: queries)
             let optimizedSearchTime = await measureSearchPerformance(index: optimizedIndex, queries: queries)
             print("    Original:  \(String(format: "%.3f", originalSearchTime * 1000))ms")
-            print("    Optimized: \(String(format: "%.3f", optimizedSearchTime * 1000))ms (%.1fx faster)".format(originalSearchTime / optimizedSearchTime))
+            print("    Optimized: \(String(format: "%.3f", optimizedSearchTime * 1000))ms (\(String(format: "%.1f", originalSearchTime / optimizedSearchTime))x faster)")
             
             // Memory usage
             let originalMemory = await originalIndex.getStatistics().memoryUsage
@@ -114,7 +114,7 @@ public final class OptimizationBenchmarks {
             let memoryReduction = (1.0 - Double(optimizedMemory) / Double(originalMemory)) * 100
             print("\n  Memory Usage:")
             print("    Original:  \(originalMemory.bytesToString())")
-            print("    Optimized: \(optimizedMemory.bytesToString()) (%.1f%% reduction)".format(memoryReduction))
+            print("    Optimized: \(optimizedMemory.bytesToString()) (\(String(format: "%.1f", memoryReduction))% reduction)")
         }
     }
     
@@ -123,7 +123,7 @@ public final class OptimizationBenchmarks {
     /// Benchmark Metal shader optimizations
     public static func benchmarkMetalOptimizations() async throws {
         print("\n⚡ Metal Shader Optimization Benchmarks")
-        print("=" * 60)
+        print(String(repeating: "=", count: 60))
         
         guard let device = try? await MetalDevice() else {
             print("  Metal not available, skipping benchmarks")
@@ -167,8 +167,8 @@ public final class OptimizationBenchmarks {
             let simdImprovement = originalTime / simdTime
             
             print("    Original:      \(String(format: "%.3f", originalTime))s")
-            print("    Optimized:     \(String(format: "%.3f", optimizedTime))s (%.1fx faster)".format(improvement))
-            print("    SIMD-specific: \(String(format: "%.3f", simdTime))s (%.1fx faster)".format(simdImprovement))
+            print("    Optimized:     \(String(format: "%.3f", optimizedTime))s (\(String(format: "%.1f", improvement))x faster)")
+            print("    SIMD-specific: \(String(format: "%.3f", simdTime))s (\(String(format: "%.1f", simdImprovement))x faster)")
             
             // Throughput
             let throughput = Double(size) / simdTime
@@ -181,7 +181,7 @@ public final class OptimizationBenchmarks {
     /// Benchmark memory pool effectiveness
     public static func benchmarkMemoryPools() async throws {
         print("\n💾 Memory Pool Optimization Benchmarks")
-        print("=" * 60)
+        print(String(repeating: "=", count: 60))
         
         let iterations = 100000
         
@@ -201,7 +201,7 @@ public final class OptimizationBenchmarks {
         
         let poolImprovement = noPoolTime / withPoolTime
         print("    Without pool: \(String(format: "%.3f", noPoolTime))s")
-        print("    With pool:    \(String(format: "%.3f", withPoolTime))s (%.1fx faster)".format(poolImprovement))
+        print("    With pool:    \(String(format: "%.3f", withPoolTime))s (\(String(format: "%.1f", poolImprovement))x faster)")
         
         // Pool statistics
         if let arrayPool = await poolManager.getArrayPool(for: "vector_array_512", elementType: Float.self) {
@@ -218,7 +218,7 @@ public final class OptimizationBenchmarks {
     /// Benchmark batch processing optimizations
     public static func benchmarkBatchProcessing() async throws {
         print("\n📦 Batch Processing Optimization Benchmarks")
-        print("=" * 60)
+        print(String(repeating: "=", count: 60))
         
         let vectorCounts = [10000, 100000]
         let batchSizes = [100, 500, 1000, 5000]
@@ -264,7 +264,7 @@ public final class OptimizationBenchmarks {
     /// Complete end-to-end performance comparison
     public static func benchmarkEndToEnd() async throws {
         print("\n🏁 End-to-End Performance Comparison")
-        print("=" * 60)
+        print(String(repeating: "=", count: 60))
         
         let vectorCount = 50000
         let dimensions = 512
@@ -295,12 +295,9 @@ public final class OptimizationBenchmarks {
         // Compare results
         print("\n  Summary:")
         let totalImprovement = originalResults.totalTime / optimizedResults.totalTime
-        print("    Total speedup:        %.1fx".format(totalImprovement))
-        print("    Memory reduction:     %.1f%%".format((1.0 - Double(optimizedResults.peakMemory) / Double(originalResults.peakMemory)) * 100))
-        print("    Queries per second:   %.0f → %.0f".format(
-            Double(queryCount) / originalResults.searchTime,
-            Double(queryCount) / optimizedResults.searchTime
-        ))
+        print("    Total speedup:        \(String(format: "%.1f", totalImprovement))x")
+        print("    Memory reduction:     \(String(format: "%.1f", (1.0 - Double(optimizedResults.peakMemory) / Double(originalResults.peakMemory)) * 100))%")
+        print("    Queries per second:   \(String(format: "%.0f", Double(queryCount) / originalResults.searchTime)) → \(String(format: "%.0f", Double(queryCount) / optimizedResults.searchTime))")
     }
     
     // MARK: - Helper Methods

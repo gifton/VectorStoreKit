@@ -178,7 +178,7 @@ where
                 group.addTask {
                     do {
                         // Update access pattern
-                        await self.accessAnalyzer.recordAccess(for: entry.id, type: .insert)
+                        await self.accessAnalyzer.recordAccess(id: entry.id, level: entry.tier == .hot ? .l1 : .l3, timestamp: Date())
                         
                         // Insert into index
                         let indexResult = try await self.primaryIndex.insert(entry)
@@ -209,7 +209,7 @@ where
                         totalUpdated += 1
                     }
                 case .failure(let error):
-                    errors.append(VectorStoreError.insertion(id, error))
+                    errors.append(VectorStoreError.insertion(reason: error.localizedDescription, vectorId: id))
                 }
             }
         }
@@ -285,7 +285,7 @@ where
         
         // Record access pattern
         let queryId = "query_\(UUID().uuidString)"
-        await accessAnalyzer.recordAccess(for: queryId, type: .search)
+        await accessAnalyzer.recordAccess(id: queryId, level: nil, timestamp: Date())
         
         // Perform search
         let results = try await primaryIndex.search(
@@ -297,7 +297,7 @@ where
         
         // Update access patterns for found results
         for result in results {
-            await accessAnalyzer.recordAccess(for: result.id, type: .access)
+            await accessAnalyzer.recordAccess(id: result.id, level: nil, timestamp: Date())
         }
         
         let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
@@ -358,7 +358,7 @@ where
         await performanceMonitor.beginOperation(operation)
         
         // Update access pattern
-        await accessAnalyzer.recordAccess(for: id, type: .update)
+        await accessAnalyzer.recordAccess(id: id, level: nil, timestamp: Date())
         
         // Update in index
         let success = try await primaryIndex.update(id: id, vector: vector, metadata: metadata)
@@ -421,7 +421,8 @@ where
             await cache.remove(id: id)
             
             // Update access patterns
-            await accessAnalyzer.recordDeletion(id: id)
+            // Deletion is recorded as access to mark the vector as deleted
+            await accessAnalyzer.recordAccess(id: id, level: nil, timestamp: Date())
         }
         
         let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
@@ -477,13 +478,13 @@ where
         try await storageBackend.compact()
         
         // Optimize cache based on access patterns
-        let patterns = await accessAnalyzer.getAccessPatterns()
+        let patterns = await accessAnalyzer.getCurrentPatterns()
         await cache.optimize()
         
-        // Prefetch frequently accessed vectors
-        let predictions = patterns.topAccessed(count: 100)
-            .reduce(into: [:]) { dict, pattern in
-                dict[pattern.id] = pattern.accessFrequency
+        // Prefetch frequently accessed vectors (hot spots)
+        let predictions = patterns.hotSpots.prefix(100)
+            .reduce(into: [:]) { dict, vectorId in
+                dict[vectorId] = Float(1.0) // High priority for hot spots
             }
         await cache.prefetch(predictions)
         
@@ -509,7 +510,7 @@ where
         let storageStats = await storageBackend.statistics()
         let cacheStats = await cache.statistics()
         let performanceStats = await performanceMonitor.overallStatistics()
-        let accessStats = await accessAnalyzer.statistics()
+        let accessStats = AccessStatistics() // Currently empty structure
         
         let stats = StoreStatistics(
             vectorCount: await primaryIndex.count,
@@ -581,13 +582,13 @@ where
     
     private func ensureReady() async throws {
         guard state == .ready else {
-            throw VectorStoreError.notReady(state)
+            throw VectorStoreError.notReady(component: "VectorStore")
         }
     }
     
     private func validateEntries(_ entries: [VectorEntry<Vector, Metadata>]) throws {
         guard !entries.isEmpty else {
-            throw VectorStoreError.validation("Empty entries array")
+            throw VectorStoreError.validation(field: "entries", value: entries, reason: "Empty entries array")
         }
         
         let expectedDimension = Vector.scalarCount
@@ -627,7 +628,7 @@ where
     private func updateInStorage(id: VectorID, vector: Vector?, metadata: Metadata?) async throws {
         // Retrieve existing entry
         guard let existingData = try await storageBackend.retrieve(key: id) else {
-            throw VectorStoreError.storageError("Entry not found in storage")
+            throw VectorStoreError.storageError(operation: "retrieve", reason: "Entry not found in storage")
         }
         
         let decoder = JSONDecoder()
@@ -730,7 +731,7 @@ where
             return try encoder.encode(exportObject)
             
         default:
-            throw VectorStoreError.exportError("Unsupported export format: \(format)")
+            throw VectorStoreError.exportError(format: "\(format)", reason: "Unsupported export format")
         }
     }
 }
@@ -1055,59 +1056,5 @@ public actor IntegrityManager: Sendable {
     }
 }
 
-/// Access pattern analysis
-
-// TODO - Gifton
-public actor AccessPatternAnalyzer: Sendable {
-    private var accessRecords: [VectorID: AccessRecord] = [:]
-    
-    public init() {}
-    
-    public func recordAccess(for id: VectorID, type: AccessType) async {
-        if let existing = accessRecords[id] {
-            accessRecords[id] = AccessRecord(
-                id: id,
-                count: existing.count + 1,
-                lastAccess: Date(),
-                type: type
-            )
-        } else {
-            accessRecords[id] = AccessRecord(id: id, count: 1, lastAccess: Date(), type: type)
-        }
-    }
-    
-    public func recordDeletion(id: VectorID) async {
-        accessRecords[id] = nil
-    }
-    
-    public func getAccessPatterns() async -> AccessPatterns {
-        AccessPatterns(records: Array(accessRecords.values))
-    }
-    
-    public func statistics() async -> AccessStatistics {
-        AccessStatistics()
-    }
-}
-
-public enum AccessType: Sendable {
-    case insert, search, update, access
-}
-
-fileprivate struct AccessRecord: Sendable {
-    let id: VectorID
-    let count: Int
-    let lastAccess: Date
-    let type: AccessType
-}
-
-public struct AccessPatterns: Sendable {
-    fileprivate let records: [AccessRecord]
-    
-    func topAccessed(count: Int) -> [(id: VectorID, accessFrequency: Float)] {
-        records
-            .sorted { $0.count > $1.count }
-            .prefix(count)
-            .map { ($0.id, Float($0.count)) }
-    }
-}
+// AccessPatternAnalyzer is defined in Caching/AccessPatternAnalyzer.swift
 

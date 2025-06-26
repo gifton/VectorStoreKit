@@ -29,7 +29,7 @@ public actor NeuralClustering {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw NeuralClusteringError.metalNotAvailable
         }
-        self.metalPipeline = try MetalMLPipeline(device: device)
+        self.metalPipeline = try await MetalMLPipeline(device: device)
         
         // Initialize neural networks
         try await initializeNetworks()
@@ -493,12 +493,11 @@ public actor NeuralClustering {
         for (query, queryResults) in zip(queries, results) {
             // Track cluster probabilities
             let probTask = Task { [weak self] in
-                guard let self else { return nil }
+                guard let self else { return nil as [Float]? }
                 return try await self.getClusterProbabilities(for: query)
             }
-            if let probabilities = try? await probTask.value,
-               let probs = probabilities {
-                performanceMetrics.updateClusterUtilization(probs)
+            if let probabilities = try? await probTask.value {
+                performanceMetrics.updateClusterUtilization(probabilities)
             }
             
             // Analyze search results to improve clustering

@@ -20,14 +20,14 @@ public extension MetalMLOperations {
         
         // Allocate buffers
         for _ in 0..<count {
-            buffers.append(try await bufferPool.acquire(size: size))
+            buffers.append(try await self.acquireBuffer(size: size))
         }
         
         // Ensure cleanup even if operation throws
         defer {
             Task {
                 for buffer in buffers {
-                    await bufferPool.release(buffer)
+                    await self.releaseBuffer(buffer)
                 }
             }
         }
@@ -61,14 +61,14 @@ public extension MetalMLOperations {
             // Calculate workspace size for tiled multiplication
             let tileSize = 32
             let workspaceSize = tileSize * tileSize * 3 // For A, B, and C tiles
-            workspaceBuffer = try await bufferPool.acquire(size: workspaceSize)
+            workspaceBuffer = try await self.acquireBuffer(size: workspaceSize)
             shouldReleaseWorkspace = true
         }
         
         defer {
             if shouldReleaseWorkspace {
                 Task {
-                    await bufferPool.release(workspaceBuffer)
+                    await self.releaseBuffer(workspaceBuffer)
                 }
             }
         }
@@ -99,10 +99,10 @@ public extension MetalMLOperations {
         }
         
         // Use temporary buffer for accumulation
-        let temp = try await bufferPool.acquire(size: expectedSize)
+        let temp = try await self.acquireBuffer(size: expectedSize)
         defer {
             Task {
-                await bufferPool.release(temp)
+                await self.releaseBuffer(temp)
             }
         }
         
@@ -163,7 +163,7 @@ public extension MetalMLOperations {
             )
         }
         
-        let pipeline = try shaderLibrary.pipeline(for: "fused_layer_norm")
+        let pipeline = try await shaderLibrary.pipeline(for: "fused_layer_norm")
         
         try await asyncQueue.submitAsync { commandBuffer in
             guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -245,10 +245,10 @@ public extension MetalMLOperations {
         scale: Float
     ) async throws {
         // Allocate attention scores buffer
-        let scoresBuffer = try await bufferPool.acquire(size: sequenceLength * sequenceLength)
+        let scoresBuffer = try await self.acquireBuffer(size: sequenceLength * sequenceLength)
         defer {
             Task {
-                await bufferPool.release(scoresBuffer)
+                await self.releaseBuffer(scoresBuffer)
             }
         }
         
@@ -293,13 +293,13 @@ public extension MetalMLOperations {
         let numChunks = (sequenceLength + chunkSize - 1) / chunkSize
         
         // Temporary buffers for chunked computation
-        let chunkScores = try await bufferPool.acquire(size: chunkSize * chunkSize)
-        let chunkOutput = try await bufferPool.acquire(size: chunkSize * headDim)
+        let chunkScores = try await self.acquireBuffer(size: chunkSize * chunkSize)
+        let chunkOutput = try await self.acquireBuffer(size: chunkSize * headDim)
         
         defer {
             Task {
-                await bufferPool.release(chunkScores)
-                await bufferPool.release(chunkOutput)
+                await self.releaseBuffer(chunkScores)
+                await self.releaseBuffer(chunkOutput)
             }
         }
         
@@ -365,14 +365,14 @@ public extension MetalMLOperations {
             
             // Allocate buffers
             for _ in 0..<count {
-                if let buffer = try? await bufferPool.acquire(size: size) {
+                if let buffer = try? await self.acquireBuffer(size: size) {
                     buffers.append(buffer)
                 }
             }
             
             // Release back to pool (now warmed)
             for buffer in buffers {
-                await bufferPool.release(buffer)
+                await self.releaseBuffer(buffer)
             }
         }
     }

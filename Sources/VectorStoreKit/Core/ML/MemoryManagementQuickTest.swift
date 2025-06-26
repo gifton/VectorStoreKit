@@ -78,7 +78,7 @@ public func testMemoryManagement() async throws {
     
     // Test 5: Gradient checkpointing
     print("\n5. Testing gradient checkpointing...")
-    let pipeline = try MetalMLPipeline(device: device)
+    let pipeline = try await MetalMLPipeline(device: device)
     let checkpointer = GradientCheckpointer(metalPipeline: pipeline)
     
     let testBuffer = try await pipeline.allocateBuffer(size: 1024)

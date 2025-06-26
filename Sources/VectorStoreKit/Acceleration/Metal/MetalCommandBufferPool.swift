@@ -12,6 +12,7 @@ public actor MetalCommandBufferPool {
     // MARK: - Properties
     
     private let device: MTLDevice
+    private let commandQueue: MTLCommandQueue
     private let maxPoolSize: Int
     private let profiler: MetalProfiler?
     
@@ -35,6 +36,7 @@ public actor MetalCommandBufferPool {
         profiler: MetalProfiler? = nil
     ) {
         self.device = device
+        self.commandQueue = device.makeCommandQueue()!
         self.maxPoolSize = maxPoolSize
         self.profiler = profiler
     }
@@ -65,7 +67,7 @@ public actor MetalCommandBufferPool {
         poolMisses += 1
         totalAllocations += 1
         
-        guard let buffer = await device.makeCommandBuffer() else {
+        guard let buffer = commandQueue.makeCommandBuffer() else {
             throw MetalComputeError.commandBufferCreationFailed
         }
         
@@ -153,7 +155,7 @@ public actor MetalCommandBufferPool {
         let bufferCount = min(count, maxPoolSize)
         
         for _ in 0..<bufferCount {
-            guard let buffer = await device.makeCommandBuffer() else {
+            guard let buffer = commandQueue.makeCommandBuffer() else {
                 throw MetalComputeError.commandBufferCreationFailed
             }
             
@@ -168,6 +170,21 @@ public actor MetalCommandBufferPool {
         }
         
         logger.info("Pre-warmed pool with \(bufferCount) command buffers")
+    }
+    
+    /// Release a command buffer back to the pool
+    public func releaseCommandBuffer(_ commandBuffer: MTLCommandBuffer) async {
+        // For now, just mark as available in active tracking
+        let id = ObjectIdentifier(commandBuffer)
+        activeCommandBuffers.remove(id)
+        
+        // In a full implementation, this would return the buffer to availableBuffers
+        // after verifying it's completed and resetting its state
+    }
+    
+    /// Get current memory usage (command buffers don't use significant memory)
+    public func getCurrentMemoryUsage() async -> Int {
+        return activeCommandBuffers.count * 1024 // Estimated 1KB per command buffer overhead
     }
 }
 

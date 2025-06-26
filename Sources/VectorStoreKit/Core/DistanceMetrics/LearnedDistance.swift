@@ -7,6 +7,7 @@ import Foundation
 import simd
 import Metal
 import CoreML
+import Accelerate
 
 /// Learned distance metric using neural networks or other ML models
 public struct LearnedDistance {
@@ -590,19 +591,39 @@ struct AnyLearnedDistanceModel: Codable {
 /// Global cache for learned models
 public actor LearnedDistanceCache {
     private var cache: [String: LearnedDistance] = [:]
+    private var accessOrder: [String] = [] // Track access order for LRU
     private let maxCacheSize = 5
     
     public static let shared = LearnedDistanceCache()
     
     public func getModel(id: String) -> LearnedDistance? {
-        return cache[id]
+        if let model = cache[id] {
+            // Move to end for LRU
+            if let index = accessOrder.firstIndex(of: id) {
+                accessOrder.remove(at: index)
+            }
+            accessOrder.append(id)
+            return model
+        }
+        return nil
     }
     
     public func cacheModel(id: String, model: LearnedDistance) {
-        if cache.count >= maxCacheSize {
-            cache.removeFirst()
+        // Remove existing entry if present
+        if cache[id] != nil, let index = accessOrder.firstIndex(of: id) {
+            accessOrder.remove(at: index)
         }
+        
+        // Evict least recently used if at capacity
+        if cache.count >= maxCacheSize && cache[id] == nil {
+            if let lruKey = accessOrder.first {
+                cache.removeValue(forKey: lruKey)
+                accessOrder.removeFirst()
+            }
+        }
+        
         cache[id] = model
+        accessOrder.append(id)
     }
     
     public func loadModel(id: String, from url: URL) async throws -> LearnedDistance {

@@ -118,14 +118,14 @@ public actor ComputeGraph {
     
     // MARK: - Initialization
     
-    public init(device: MTLDevice) throws {
+    public init(device: MTLDevice) async throws {
         self.device = device
         guard let queue = device.makeCommandQueue() else {
             throw MetalMLError.commandQueueCreationFailed
         }
         self.commandQueue = queue
         self.bufferPool = MetalBufferPool(device: device)
-        self.shaderLibrary = try MLShaderLibrary(device: device)
+        self.shaderLibrary = try await MLShaderLibrary(device: device)
     }
     
     // MARK: - Graph Construction
@@ -428,7 +428,7 @@ public actor ComputeGraph {
         }.first
         
         // Create compute pipeline
-        let shaderLibrary = try MLShaderLibrary(device: device)
+        let shaderLibrary = try await MLShaderLibrary(device: device)
         let functionName: String
         
         if hasBias && activation != nil {
@@ -445,7 +445,7 @@ public actor ComputeGraph {
             functionName = MLShaderLibrary.MatrixOperation.matmulForward.rawValue
         }
         
-        let pipeline = try shaderLibrary.pipeline(for: functionName)
+        let pipeline = try await shaderLibrary.pipeline(for: functionName)
         
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
               let encoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -515,7 +515,7 @@ public actor ComputeGraph {
         let output = MetalBuffer(buffer: outputBuffer, shape: first.shape)
         
         // Select appropriate shader
-        let shaderLibrary = try MLShaderLibrary(device: device)
+        let shaderLibrary = try await MLShaderLibrary(device: device)
         let functionName: String
         
         switch operation {
@@ -527,7 +527,7 @@ public actor ComputeGraph {
             throw MetalMLError.invalidArchitecture("Unsupported elementwise operation")
         }
         
-        let pipeline = try shaderLibrary.pipeline(for: functionName)
+        let pipeline = try await shaderLibrary.pipeline(for: functionName)
         
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
               let encoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -575,7 +575,7 @@ public actor ComputeGraph {
         let output = MetalBuffer(buffer: outputBuffer, shape: input.shape)
         
         // Select appropriate shader
-        let shaderLibrary = try MLShaderLibrary(device: device)
+        let shaderLibrary = try await MLShaderLibrary(device: device)
         let functionName: String
         
         switch activation {
@@ -593,7 +593,7 @@ public actor ComputeGraph {
             functionName = MLShaderLibrary.ActivationFunction.reluForward.rawValue
         }
         
-        let pipeline = try shaderLibrary.pipeline(for: functionName)
+        let pipeline = try await shaderLibrary.pipeline(for: functionName)
         
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
               let encoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -750,7 +750,7 @@ public actor ComputeGraph {
         let output = try await bufferPool.getBuffer(size: outputSize * MemoryLayout<Float>.stride)
         
         // Use reduce kernel
-        let pipeline = try shaderLibrary.pipeline(for: MLShaderLibrary.LossFunction.reduceSum.rawValue)
+        let pipeline = try await shaderLibrary.pipeline(for: MLShaderLibrary.LossFunction.reduceSum.rawValue)
         
         guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
             throw MetalMLError.commandQueueCreationFailed
@@ -806,7 +806,7 @@ public actor ComputeGraph {
         let output = try await bufferPool.getBuffer(size: outputShape.elementCount * MemoryLayout<Float>.stride)
         
         // Use concatenate kernel
-        let pipeline = try shaderLibrary.pipeline(for: MLShaderLibrary.ElementwiseOperation.concatenateBuffers.rawValue)
+        let pipeline = try await shaderLibrary.pipeline(for: MLShaderLibrary.ElementwiseOperation.concatenateBuffers.rawValue)
         
         guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
             throw MetalMLError.commandQueueCreationFailed
@@ -852,7 +852,7 @@ public actor ComputeGraph {
         
         let output = try await bufferPool.getBuffer(size: input.byteLength)
         
-        let pipeline = try shaderLibrary.pipeline(for: MLShaderLibrary.NormalizationFunction.batchNormForward.rawValue)
+        let pipeline = try await shaderLibrary.pipeline(for: MLShaderLibrary.NormalizationFunction.batchNormForward.rawValue)
         
         guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
             throw MetalMLError.commandQueueCreationFailed
@@ -902,7 +902,7 @@ public actor ComputeGraph {
         
         let output = try await bufferPool.getBuffer(size: input.byteLength)
         
-        let pipeline = try shaderLibrary.pipeline(for: MLShaderLibrary.ElementwiseOperation.dropoutForward.rawValue)
+        let pipeline = try await shaderLibrary.pipeline(for: MLShaderLibrary.ElementwiseOperation.dropoutForward.rawValue)
         
         guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
             throw MetalMLError.commandQueueCreationFailed

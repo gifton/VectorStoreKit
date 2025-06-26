@@ -62,14 +62,14 @@ public actor MetalDistanceMatrix {
         logger.info("Computing distance matrix: \(numVectorsA)x\(numVectorsB), metric: \(String(describing: metric))")
         
         // Decide computation strategy
-        let strategy = selectComputationStrategy(
+        let strategy: ComputationStrategy = selectComputationStrategy(
             numVectorsA: numVectorsA,
             numVectorsB: numVectorsB,
             dimension: 512,
             isSymmetric: isSymmetric
         )
         
-        logger.debug("Selected strategy: \(strategy)")
+        logger.debug("Selected strategy: \(String(describing: strategy))")
         
         let flatMatrix: [Float]
         
@@ -110,7 +110,7 @@ public actor MetalDistanceMatrix {
         }
         
         let duration = CFAbsoluteTimeGetCurrent() - startTime
-        await profiler?.recordOperation(.distanceMatrix, duration: duration, dataSize: totalElements)
+        await profiler?.recordOperation(.distanceComputation, duration: duration, dataSize: totalElements)
         
         logger.info("Distance matrix computation completed in \(duration)s")
         
@@ -422,7 +422,7 @@ public actor MetalDistanceMatrix {
         
         for vector in vectors {
             vector.withUnsafeMetalBytes { bytes in
-                data.append(bytes)
+                data.append(contentsOf: bytes)
             }
         }
         
@@ -447,9 +447,9 @@ extension MetalDistanceMatrix {
     public func benchmark(
         sizes: [Int] = [100, 500, 1000, 2000, 5000],
         metric: DistanceMetric = .euclidean
-    ) async throws -> BenchmarkResults {
+    ) async throws -> DistanceMatrixBenchmarkResults {
         
-        var results = BenchmarkResults()
+        var results = DistanceMatrixBenchmarkResults()
         
         for size in sizes {
             logger.info("Benchmarking size: \(size)x\(size)")
@@ -495,7 +495,7 @@ extension MetalDistanceMatrix {
 
 // MARK: - Benchmark Results
 
-public struct BenchmarkResults {
+public struct DistanceMatrixBenchmarkResults {
     public struct Result {
         public let size: Int
         public let cpuTime: Double

@@ -201,6 +201,10 @@ public actor BasicLFUVectorCache<Vector: SIMD & Sendable>: VectorCache where Vec
         cache[id] != nil
     }
     
+    public func currentSize() async -> Int {
+        cache.count
+    }
+    
     // MARK: - Advanced Operations (Medium Complexity)
     
     public func preload(ids: [VectorID]) async {

@@ -71,7 +71,8 @@ public actor BatchProcessor: BatchSizeManager, MemoryPressureAware {
     private let configuration: BatchProcessingConfiguration
     private let metalCompute: MetalCompute?
     private let bufferPool: MetalBufferPool?
-    private let memoryPool: MemoryPoolManager
+    private let memoryPoolManager: MemoryPoolManager?
+    private var bufferMemoryPool: EnhancedBufferPool?
     
     // Progress tracking
     private var currentProgress: BatchProgress?
@@ -106,13 +107,13 @@ public actor BatchProcessor: BatchSizeManager, MemoryPressureAware {
         self.currentBatchSize = configuration.optimalBatchSize
         self.metalCompute = configuration.useMetalAcceleration ? metalCompute : nil
         self.bufferPool = configuration.useMetalAcceleration ? bufferPool : nil
-        self.memoryPool = memoryPool ?? MemoryPoolManager(
-            configuration: .init(
-                maxPoolSize: configuration.memoryLimit,
-                allocationStrategy: .bestFit,
-                defragmentationThreshold: 0.3
-            )
+        self.memoryPoolManager = memoryPool ?? MemoryPoolManager(
+            autoDefragmentationEnabled: true,
+            defragmentationInterval: 300
         )
+        
+        // Initialize buffer pool later when needed
+        self.bufferMemoryPool = nil
     }
     
     // MARK: - Type-Safe Batch Processing
@@ -471,15 +472,17 @@ public actor BatchProcessor: BatchSizeManager, MemoryPressureAware {
     ) async throws -> BatchIndexingResult where Index.Vector == Vector512 {
         let startTime = DispatchTime.now()
         
-        // Create memory pool for batch operation
-        let pool = await memoryPool.createSubpool(
-            name: "batch_indexing_\(UUID().uuidString)",
-            maxSize: configuration.memoryLimit
-        )
-        defer {
-            Task {
-                await memoryPool.releaseSubpool(pool)
-            }
+        // Get or create buffer pool for batch operation
+        if bufferMemoryPool == nil {
+            bufferMemoryPool = await memoryPoolManager?.createEnhancedBufferPool(
+                for: "batch_indexing",
+                maxPoolSize: 100,
+                defaultAlignment: 64
+            )
+        }
+        
+        guard let pool = bufferMemoryPool else {
+            throw BatchProcessingError.memoryPoolNotAvailable
         }
         
         // Track results
@@ -488,7 +491,7 @@ public actor BatchProcessor: BatchSizeManager, MemoryPressureAware {
         var transactionLog: [IndexingTransaction] = []
         
         // Process in optimal batches
-        let batchSize = determineBatchSize(
+        let batchSize = await determineBatchSize(
             for: entries.count,
             itemSize: MemoryLayout<Vector512>.size + 1024 // Estimate with metadata
         )
@@ -503,10 +506,12 @@ public actor BatchProcessor: BatchSizeManager, MemoryPressureAware {
                 for batch in entries.chunked(into: batchSize) {
                     // Check memory before processing batch
                     let requiredMemory = batch.count * (MemoryLayout<Vector512>.size + 1024)
-                    guard await pool.canAllocate(size: requiredMemory) else {
+                    // Check memory statistics instead
+                    let stats = await pool.statistics()
+                    guard stats.totalMemoryBytes - stats.currentlyInUse >= requiredMemory else {
                         throw BatchProcessingError.memoryExhausted(
                             required: requiredMemory,
-                            available: await pool.availableMemory
+                            available: stats.totalMemoryBytes - stats.currentlyInUse
                         )
                     }
                     
@@ -590,7 +595,7 @@ public actor BatchProcessor: BatchSizeManager, MemoryPressureAware {
             failures: failedInserts,
             totalTime: duration,
             throughput: Double(entries.count) / duration,
-            memoryPeakUsage: await pool.peakUsage,
+            memoryPeakUsage: await pool.statistics().peakUsage,
             transactionId: transactionId,
             indexOptimized: false
         )
@@ -600,7 +605,7 @@ public actor BatchProcessor: BatchSizeManager, MemoryPressureAware {
     private func processBatchInsertion<Index: VectorIndex>(
         batch: [VectorEntry<Vector512, Index.Metadata>],
         index: Index,
-        pool: MemoryPoolManager.Subpool,
+        pool: EnhancedBufferPool,
         transactionId: String,
         options: BatchIndexingOptions
     ) async throws -> BatchInsertResult where Index.Vector == Vector512 {
@@ -610,14 +615,15 @@ public actor BatchProcessor: BatchSizeManager, MemoryPressureAware {
         var failures: [(id: String, error: Error)] = []
         var insertedEntries: [(id: String, timestamp: Date)] = []
         
-        // Allocate memory for batch
-        let memoryHandle = try await pool.allocate(
-            size: batch.count * MemoryLayout<Vector512>.size,
+        // Acquire buffer from pool
+        let bufferSize = batch.count * MemoryLayout<Vector512>.size
+        let memoryBuffer = try await pool.acquireBuffer(
+            size: bufferSize,
             alignment: 64
         )
         defer {
             Task {
-                await pool.deallocate(memoryHandle)
+                await pool.releaseBuffer(memoryBuffer, size: bufferSize, alignment: 64)
             }
         }
         
@@ -727,7 +733,7 @@ public actor BatchProcessor: BatchSizeManager, MemoryPressureAware {
         if let count = await index.count,
            count > 0 && count % 10000 == 0 {
             Task {
-                try? await index.optimize(strategy: .incremental)
+                try? await index.optimize(strategy: .light)
             }
         }
         
@@ -783,7 +789,7 @@ public actor BatchProcessor: BatchSizeManager, MemoryPressureAware {
     
     public func resetBatchSize() async {
         currentBatchSize = defaultBatchSize
-        logger.info("Reset batch size to default: \(defaultBatchSize)")
+        logger.info("Reset batch size to default: \(self.defaultBatchSize)")
     }
     
     // MARK: - MemoryPressureAware Protocol
@@ -922,6 +928,7 @@ private struct TransactionState {
 /// Batch processing errors
 public enum BatchProcessingError: LocalizedError {
     case memoryExhausted(required: Int, available: Int)
+    case memoryPoolNotAvailable
     case transactionFailed(transactionId: String, failureCount: Int)
     case duplicateEntry(id: String)
     case invalidDimensions(expected: Int, actual: Int)
@@ -934,6 +941,8 @@ public enum BatchProcessingError: LocalizedError {
         switch self {
         case .memoryExhausted(let required, let available):
             return "Memory exhausted: required \(required) bytes, available \(available) bytes"
+        case .memoryPoolNotAvailable:
+            return "Memory pool is not available or could not be created"
         case .transactionFailed(let transactionId, let failureCount):
             return "Transaction \(transactionId) failed with \(failureCount) errors"
         case .duplicateEntry(let id):
@@ -1067,7 +1076,7 @@ extension BatchProcessor {
 
 // MARK: - Array Extensions
 
-private extension Array {
+internal extension Array {
     /// Split array into chunks of specified size
     func chunked(into size: Int) -> [[Element]] {
         guard size > 0 else { return [] }

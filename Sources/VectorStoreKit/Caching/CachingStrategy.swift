@@ -29,7 +29,7 @@ public struct CacheLevelConfiguration: Sendable, Codable {
     public init(
         level: CacheLevel,
         maxMemory: Int,
-        evictionPolicy: EvictionPolicy = .lru,
+        evictionPolicy: EvictionPolicy = EvictionPolicy.lru,
         accessTimeThreshold: TimeInterval = 0.001,
         warmupEnabled: Bool = true,
         prefetchEnabled: Bool = true
@@ -172,7 +172,7 @@ where Vector.Scalar: BinaryFloatingPoint {
         id: VectorID,
         vector: Vector,
         metadata: Metadata? = nil,
-        priority: CachePriority = .normal
+        priority: CachePriority = CachePriority.normal
     ) async {
         // Analyze vector quality to determine initial level
         let quality = VectorQuality.assess(vector)
@@ -307,24 +307,24 @@ where Vector.Scalar: BinaryFloatingPoint {
         storageBackend: (any CacheStorageBackend<Vector>)?
     ) async throws -> any VectorCache<Vector> {
         switch config.evictionPolicy {
-        case .lru:
+        case EvictionPolicy.lru:
             return try await BasicLRUVectorCache<Vector>(
                 maxMemory: config.maxMemory,
                 storageBackend: storageBackend
             )
-        case .lfu:
+        case EvictionPolicy.lfu:
             let cache = try await BasicLFUVectorCache<Vector>(
                 maxMemory: config.maxMemory,
                 storageBackend: storageBackend
             )
             await cache.start()
             return cache
-        case .fifo:
+        case EvictionPolicy.fifo:
             return try await BasicFIFOVectorCache<Vector>(
                 maxMemory: config.maxMemory,
                 storageBackend: storageBackend
             )
-        case .arc:
+        case EvictionPolicy.arc:
             // Use ARC implementation when available, fallback to LRU
             return try await AdaptiveReplacementCache<Vector>(
                 maxMemory: config.maxMemory,
@@ -360,19 +360,19 @@ where Vector.Scalar: BinaryFloatingPoint {
         currentMemoryPressure = pressure
         
         switch pressure {
-        case .normal:
+        case MemoryPressureLevel.normal:
             // No action needed
             break
             
-        case .warning:
+        case MemoryPressureLevel.warning:
             // Reduce L1 and L2 cache sizes by 20%
-            await adaptiveSizer.adjustSizes(factor: 0.8, levels: [.l1, .l2])
+            await adaptiveSizer.adjustSizes(factor: 0.8, levels: [CacheLevel.l1, CacheLevel.l2])
             
-        case .urgent:
+        case MemoryPressureLevel.urgent:
             // Reduce all cache sizes by 40%
             await adaptiveSizer.adjustSizes(factor: 0.6, levels: CacheLevel.allCases)
             
-        case .critical:
+        case MemoryPressureLevel.critical:
             // Emergency eviction - keep only critical items
             await performEmergencyEviction()
         }
@@ -415,7 +415,7 @@ where Vector.Scalar: BinaryFloatingPoint {
         vector: Vector,
         fromLevel: CacheLevel
     ) async {
-        guard fromLevel != .l1 else { return }
+        guard fromLevel != CacheLevel.l1 else { return }
         
         let accessCount = await patternAnalyzer.getAccessCount(id: id)
         
@@ -423,13 +423,13 @@ where Vector.Scalar: BinaryFloatingPoint {
             // Promote to next level
             let targetLevel: CacheLevel
             switch fromLevel {
-            case .l3: targetLevel = .l2
-            case .l2: targetLevel = .l1
+            case .l3: targetLevel = CacheLevel.l2
+            case .l2: targetLevel = CacheLevel.l1
             case .l1: return // Already at highest level
             }
             
             if let targetCache = caches[targetLevel] {
-                await targetCache.set(id: id, vector: vector, priority: .high)
+                await targetCache.set(id: id, vector: vector, priority: CachePriority.high)
                 logger.debug("Promoted vector \(id) from \(fromLevel) to \(targetLevel)")
             }
         }
@@ -441,17 +441,17 @@ where Vector.Scalar: BinaryFloatingPoint {
         vectorSize: Int
     ) async -> CacheLevel {
         // High quality, high priority vectors go to L1
-        if quality.quantizability > 0.8 && priority == .critical {
-            return .l1
+        if quality.quantizability > 0.8 && priority == CachePriority.critical {
+            return CacheLevel.l1
         }
         
         // Medium quality or normal priority go to L2
-        if quality.quantizability > 0.5 || priority == .high {
-            return .l2
+        if quality.quantizability > 0.5 || priority == CachePriority.high {
+            return CacheLevel.l2
         }
         
         // Everything else goes to L3
-        return .l3
+        return CacheLevel.l3
     }
     
     private func triggerWarmingIfNeeded(id: VectorID, level: CacheLevel) async {
@@ -483,19 +483,19 @@ where Vector.Scalar: BinaryFloatingPoint {
     private func executeWarmingPlan(_ plan: CacheWarmingPlan) async {
         for action in plan.actions {
             switch action {
-            case .preload(let ids, let level):
+            case CacheWarmingPlan.Action.preload(let ids, let level):
                 if let cache = caches[level] {
                     await cache.preload(ids)
                 }
                 
-            case .promote(let id, let fromLevel, let toLevel):
+            case CacheWarmingPlan.Action.promote(let id, let fromLevel, let toLevel):
                 if let fromCache = caches[fromLevel],
                    let toCache = caches[toLevel],
                    let vector = await fromCache.get(id: id) {
-                    await toCache.set(id: id, vector: vector, priority: .high)
+                    await toCache.set(id: id, vector: vector, priority: CachePriority.high)
                 }
                 
-            case .prefetch(let predictions, let level):
+            case CacheWarmingPlan.Action.prefetch(let predictions, let level):
                 if let cache = caches[level] {
                     await cache.prefetch(predictions)
                 }
@@ -533,21 +533,21 @@ where Vector.Scalar: BinaryFloatingPoint {
         // Check for underutilized levels
         for (level, levelMetrics) in metrics.levelMetrics {
             if levelMetrics.hitRate < 0.3 && levelMetrics.count > 0 {
-                actions.append(.resizeLevel(level: level, factor: 0.7))
+                actions.append(CacheOptimizationPlan.OptimizationAction.resizeLevel(level: level, factor: 0.7))
             }
         }
         
         // Check for hot spots
         if patterns.hotSpots.count > 10 {
-            actions.append(.redistributeHotSpots(
+            actions.append(CacheOptimizationPlan.OptimizationAction.redistributeHotSpots(
                 vectors: Array(patterns.hotSpots.prefix(20)),
-                targetLevel: .l1
+                targetLevel: CacheLevel.l1
             ))
         }
         
         // Check for sequential access patterns
         if patterns.sequentialityScore > 0.7 {
-            actions.append(.enableStreamPrefetch(levels: [.l2, .l3]))
+            actions.append(CacheOptimizationPlan.OptimizationAction.enableStreamPrefetch(levels: [CacheLevel.l2, CacheLevel.l3]))
         }
         
         return CacheOptimizationPlan(actions: actions)
@@ -556,10 +556,10 @@ where Vector.Scalar: BinaryFloatingPoint {
     private func executeOptimizationPlan(_ plan: CacheOptimizationPlan) async {
         for action in plan.actions {
             switch action {
-            case .resizeLevel(let level, let factor):
+            case CacheOptimizationPlan.OptimizationAction.resizeLevel(let level, let factor):
                 await adaptiveSizer.adjustSize(level: level, factor: factor)
                 
-            case .redistributeHotSpots(let vectors, let targetLevel):
+            case CacheOptimizationPlan.OptimizationAction.redistributeHotSpots(let vectors, let targetLevel):
                 // Move hot vectors to target level
                 for vectorId in vectors {
                     // Find vector in lower levels and promote
@@ -571,7 +571,7 @@ where Vector.Scalar: BinaryFloatingPoint {
                                 await targetCache.set(
                                     id: vectorId,
                                     vector: vector,
-                                    priority: .critical
+                                    priority: CachePriority.critical
                                 )
                             }
                             break
@@ -579,7 +579,7 @@ where Vector.Scalar: BinaryFloatingPoint {
                     }
                 }
                 
-            case .enableStreamPrefetch(let levels):
+            case CacheOptimizationPlan.OptimizationAction.enableStreamPrefetch(let levels):
                 // Enable streaming prefetch for specified levels
                 logger.info("Enabling stream prefetch for levels: \(levels)")
             }
@@ -590,12 +590,12 @@ where Vector.Scalar: BinaryFloatingPoint {
         logger.warning("Performing emergency eviction due to critical memory pressure")
         
         // Keep only critical items in L1
-        if let l1Cache = caches[.l1] {
+        if let l1Cache = caches[CacheLevel.l1] {
             await l1Cache.clear()
         }
         
         // Reduce L2 to 25% capacity
-        if let l2Cache = caches[.l2] {
+        if let l2Cache = caches[CacheLevel.l2] {
             let currentCount = await l2Cache.count
             let targetCount = currentCount / 4
             // Trigger aggressive eviction
@@ -603,7 +603,7 @@ where Vector.Scalar: BinaryFloatingPoint {
         }
         
         // Clear L3 entirely
-        if let l3Cache = caches[.l3] {
+        if let l3Cache = caches[CacheLevel.l3] {
             await l3Cache.clear()
         }
     }
@@ -621,7 +621,7 @@ where Vector.Scalar: BinaryFloatingPoint {
         for (level, hitRate) in hitRates {
             if hitRate < avgHitRate * 0.5 {
                 recommendations.append(MultiLevelCacheRecommendation(
-                    type: .rebalance,
+                    type: MultiLevelCacheRecommendation.RecommendationType.rebalance,
                     description: "Level \(level) significantly underperforming",
                     expectedImprovement: 0.2,
                     affectedLevels: [level]
@@ -632,7 +632,7 @@ where Vector.Scalar: BinaryFloatingPoint {
         // Check for memory pressure
         if currentMemoryPressure != .normal {
             recommendations.append(MultiLevelCacheRecommendation(
-                type: .memoryOptimization,
+                type: MultiLevelCacheRecommendation.RecommendationType.memoryOptimization,
                 description: "Optimize memory usage due to \(currentMemoryPressure) pressure",
                 expectedImprovement: 0.15,
                 affectedLevels: CacheLevel.allCases
@@ -642,10 +642,10 @@ where Vector.Scalar: BinaryFloatingPoint {
         // Check for access pattern optimization
         if globalAnalysis.accessPatternEfficiency < 0.6 {
             recommendations.append(MultiLevelCacheRecommendation(
-                type: .patternOptimization,
+                type: MultiLevelCacheRecommendation.RecommendationType.patternOptimization,
                 description: "Improve cache organization based on access patterns",
                 expectedImprovement: 0.3,
-                affectedLevels: [.l1, .l2]
+                affectedLevels: [CacheLevel.l1, CacheLevel.l2]
             ))
         }
         
@@ -663,10 +663,10 @@ where Vector.Scalar: BinaryFloatingPoint {
         
         // Penalize memory pressure
         switch currentMemoryPressure {
-        case .normal: break
-        case .warning: score -= 10
-        case .urgent: score -= 25
-        case .critical: score -= 40
+        case MemoryPressureLevel.normal: break
+        case MemoryPressureLevel.warning: score -= 10
+        case MemoryPressureLevel.urgent: score -= 25
+        case MemoryPressureLevel.critical: score -= 40
         }
         
         // Penalize poor pattern utilization
@@ -722,9 +722,9 @@ where Vector.Scalar: BinaryFloatingPoint {
 private extension MemoryPressureLevel {
     init(from systemLevel: SystemMemoryPressure) {
         switch systemLevel {
-        case .normal: self = .normal
-        case .warning: self = .warning
-        case .critical: self = .critical
+        case SystemMemoryPressure.normal: self = MemoryPressureLevel.normal
+        case SystemMemoryPressure.warning: self = MemoryPressureLevel.warning
+        case SystemMemoryPressure.critical: self = MemoryPressureLevel.critical
         }
     }
 }
@@ -810,7 +810,7 @@ struct CacheOptimizationPlan {
 
 /// Multi-level cache recommendation
 public struct MultiLevelCacheRecommendation: Sendable {
-    public enum RecommendationType {
+    public enum RecommendationType: Sendable {
         case rebalance
         case memoryOptimization
         case patternOptimization

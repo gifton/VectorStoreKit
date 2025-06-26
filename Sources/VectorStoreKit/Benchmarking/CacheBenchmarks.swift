@@ -120,9 +120,7 @@ public struct CacheBenchmarks {
             
             // Sequential access pattern
             benchmark(name: "sequential_access_pattern") {
-                let cache = LRUCache<String, Data>(
-                    configuration: LRUCacheConfiguration(maxSize: cacheSize)
-                )
+                let cache = LRUCache<String, Data>(capacity: cacheSize)
                 
                 var hits = 0
                 for i in 0..<totalAccesses {
@@ -147,20 +145,18 @@ public struct CacheBenchmarks {
             
             // Random access pattern
             benchmark(name: "random_access_pattern") {
-                let cache = LRUCache<String, Data>(
-                    configuration: LRUCacheConfiguration(maxSize: cacheSize)
-                )
+                let cache = LRUCache<String, Data>(capacity: cacheSize)
                 
                 var hits = 0
                 for _ in 0..<totalAccesses {
                     let id = Int.random(in: 0..<(cacheSize * 3))
                     let key = "key_\(id)"
                     
-                    if await cache.get(key) != nil {
+                    if cache.get(key) != nil {
                         hits += 1
                     } else {
                         let data = CacheTestData(id: id)
-                        await cache.set(key, data.value)
+                        cache.set(key, data.value)
                     }
                 }
                 
@@ -175,20 +171,18 @@ public struct CacheBenchmarks {
             
             // Zipfian distribution (realistic)
             benchmark(name: "zipfian_access_pattern") {
-                let cache = LRUCache<String, Data>(
-                    configuration: LRUCacheConfiguration(maxSize: cacheSize)
-                )
+                let cache = LRUCache<String, Data>(capacity: cacheSize)
                 
                 var hits = 0
                 for _ in 0..<totalAccesses {
                     let id = generateZipfian(n: cacheSize * 2)
                     let key = "key_\(id)"
                     
-                    if await cache.get(key) != nil {
+                    if cache.get(key) != nil {
                         hits += 1
                     } else {
                         let data = CacheTestData(id: id)
-                        await cache.set(key, data.value)
+                        cache.set(key, data.value)
                     }
                 }
                 
@@ -217,13 +211,11 @@ public struct CacheBenchmarks {
             
             // LRU eviction
             benchmark(name: "lru_eviction") {
-                let cache = LRUCache<String, Data>(
-                    configuration: LRUCacheConfiguration(maxSize: cacheSize)
-                )
+                let cache = LRUCache<String, Data>(capacity: cacheSize)
                 
                 for i in 0..<(cacheSize * overflowFactor) {
                     let data = CacheTestData(id: i)
-                    await cache.set(data.key, data.value)
+                    cache.set(data.key, data.value)
                 }
                 
                 let size = await cache.currentSize()
@@ -233,12 +225,12 @@ public struct CacheBenchmarks {
             // LFU eviction
             benchmark(name: "lfu_eviction") {
                 let cache = LFUCache<String, Data>(
-                    configuration: LFUCacheConfiguration(maxSize: cacheSize)
+                    configuration: LFUCacheConfiguration(maxMemory: cacheSize)
                 )
                 
                 for i in 0..<(cacheSize * overflowFactor) {
                     let data = CacheTestData(id: i)
-                    await cache.set(data.key, data.value)
+                    cache.set(data.key, data.value)
                 }
                 
                 let size = await cache.currentSize()
@@ -248,12 +240,12 @@ public struct CacheBenchmarks {
             // FIFO eviction
             benchmark(name: "fifo_eviction") {
                 let cache = FIFOCache<String, Data>(
-                    configuration: FIFOCacheConfiguration(maxSize: cacheSize)
+                    configuration: FIFOCacheConfiguration(maxMemory: cacheSize)
                 )
                 
                 for i in 0..<(cacheSize * overflowFactor) {
                     let data = CacheTestData(id: i)
-                    await cache.set(data.key, data.value)
+                    cache.set(data.key, data.value)
                 }
                 
                 let size = await cache.currentSize()
@@ -277,9 +269,7 @@ public struct CacheBenchmarks {
             // Create benchmarks for each concurrency level
             // LRU with 1 thread
             benchmark(name: "lru_concurrent_1") {
-                let cache = LRUCache<String, Data>(
-                    configuration: LRUCacheConfiguration(maxSize: cacheSize)
-                )
+                let cache = LRUCache<String, Data>(capacity: cacheSize)
                 
                 await withTaskGroup(of: Void.self) { group in
                     group.addTask {
@@ -304,9 +294,7 @@ public struct CacheBenchmarks {
             
             // LRU with 4 threads
             benchmark(name: "lru_concurrent_4") {
-                let cache = LRUCache<String, Data>(
-                    configuration: LRUCacheConfiguration(maxSize: cacheSize)
-                )
+                let cache = LRUCache<String, Data>(capacity: cacheSize)
                 
                 await withTaskGroup(of: Void.self) { group in
                     for taskId in 0..<4 {
@@ -333,9 +321,7 @@ public struct CacheBenchmarks {
             
             // LRU with 8 threads
             benchmark(name: "lru_concurrent_8") {
-                let cache = LRUCache<String, Data>(
-                    configuration: LRUCacheConfiguration(maxSize: cacheSize)
-                )
+                let cache = LRUCache<String, Data>(capacity: cacheSize)
                 
                 await withTaskGroup(of: Void.self) { group in
                     for taskId in 0..<8 {
@@ -367,9 +353,7 @@ public struct CacheBenchmarks {
     // MARK: - Helper Functions
     
     private func benchmarkLRUCache(capacity: Int, itemSize: Int) async throws {
-        let cache = LRUCache<String, Data>(
-            configuration: LRUCacheConfiguration(maxSize: capacity)
-        )
+        let cache = LRUCache<String, Data>(capacity: capacity)
         
         // Warm up cache
         for i in 0..<capacity {
@@ -390,7 +374,7 @@ public struct CacheBenchmarks {
     
     private func benchmarkLFUCache(capacity: Int, itemSize: Int) async throws {
         let cache = LFUCache<String, Data>(
-            configuration: LFUCacheConfiguration(maxSize: capacity)
+            configuration: LFUCacheConfiguration(maxMemory: capacity)
         )
         
         // Similar implementation to LRU
@@ -411,7 +395,7 @@ public struct CacheBenchmarks {
     
     private func benchmarkFIFOCache(capacity: Int, itemSize: Int) async throws {
         let cache = FIFOCache<String, Data>(
-            configuration: FIFOCacheConfiguration(maxSize: capacity)
+            configuration: FIFOCacheConfiguration(maxMemory: capacity)
         )
         
         for i in 0..<capacity {

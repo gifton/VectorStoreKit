@@ -143,6 +143,8 @@ public actor MLMemoryManager {
             switch newLevel {
             case .critical:
                 logger.critical("Memory usage critical: \(String(format: "%.1f%%", usage * 100))")
+            case .urgent:
+                logger.error("Memory usage urgent: \(String(format: "%.1f%%", usage * 100))")
             case .warning:
                 logger.warning("Memory usage warning: \(String(format: "%.1f%%", usage * 100))")
             case .normal:
@@ -170,8 +172,8 @@ public actor MLMemoryManager {
     
     // MARK: - Memory Statistics
     
-    public func getStatistics() -> MemoryStatistics {
-        MemoryStatistics(
+    public func getStatistics() -> MLMemoryStatistics {
+        MLMemoryStatistics(
             currentUsage: totalAllocatedMemory,
             peakUsage: peakMemoryUsage,
             bufferCount: allocatedBuffers.count,
@@ -194,15 +196,15 @@ public actor MLMemoryManager {
     
     /// Force cleanup of tracked buffers
     public func forceCleanup() {
-        logger.warning("Forcing memory cleanup: \(allocatedBuffers.count) buffers")
+        logger.warning("Forcing memory cleanup: \(self.allocatedBuffers.count) buffers")
         executeCleanupCallbacks(level: .critical)
     }
 }
 
 // MARK: - Memory Statistics
 
-/// Memory usage statistics
-public struct MemoryStatistics: Sendable {
+/// Memory usage statistics for ML operations
+public struct MLMemoryStatistics: Sendable {
     public let currentUsage: Int
     public let peakUsage: Int
     public let bufferCount: Int
@@ -243,10 +245,9 @@ public final class ManagedMetalBuffer: @unchecked Sendable {
     }
     
     deinit {
-        Task {
-            await memoryManager.untrackBuffer(buffer)
-            releaseCallback?()
-        }
+        // Note: We cannot use async operations in deinit
+        // The memory manager should handle cleanup through other mechanisms
+        releaseCallback?()
     }
     
     public var metalBuffer: MetalBuffer {
@@ -315,7 +316,7 @@ public actor PressureAwareBufferPool {
         let requiredSize = alignedSize * MemoryLayout<Float>.stride
         guard await memoryManager.canAllocate(size: requiredSize) else {
             // Try to evict some buffers
-            await evictBuffers(targetSize: requiredSize)
+            evictBuffers(targetSize: requiredSize)
             
             // Check again
             guard await memoryManager.canAllocate(size: requiredSize) else {
@@ -365,6 +366,9 @@ public actor PressureAwareBufferPool {
         case .warning:
             // Evict 50% of cached buffers
             evictPercentage(0.5)
+        case .urgent:
+            // Evict 75% of cached buffers
+            evictPercentage(0.75)
         case .critical:
             // Clear all pools
             clearAll()
@@ -435,7 +439,10 @@ public actor PressureAwareBufferPool {
             currentlyInUse: 0, // Not tracked in this implementation
             peakUsage: 0, // Not tracked in this implementation
             hitRate: hitRate,
-            averageAllocationTime: 0 // Not tracked in this implementation
+            averageAllocationTime: 0, // Not tracked in this implementation
+            totalMemoryBytes: 0, // Not tracked in this implementation
+            fragmentationRatio: 0.0, // Not tracked in this implementation
+            lastDefragmentation: nil // Not tracked in this implementation
         )
     }
     
@@ -580,7 +587,7 @@ public actor GradientCheckpointer {
     
     /// Clear all checkpoints
     public func clearAll() async {
-        for (key, buffer) in checkpoints {
+        for (_, buffer) in checkpoints {
             await metalPipeline.releaseBuffer(buffer)
         }
         checkpoints.removeAll()
@@ -641,12 +648,9 @@ public enum MemoryDebugger {
     public static func printMemoryUsage() {
         let info = ProcessInfo.processInfo
         let physicalMemory = info.physicalMemory
-        let usedMemory = physicalMemory - info.availablePhysicalMemory
         
         print("=== Memory Usage ===")
         print("Physical Memory: \(formatBytes(physicalMemory))")
-        print("Used Memory: \(formatBytes(usedMemory))")
-        print("Available Memory: \(formatBytes(info.availablePhysicalMemory))")
         print("==================")
     }
     

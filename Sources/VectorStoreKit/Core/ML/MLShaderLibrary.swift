@@ -6,13 +6,12 @@ import Foundation
 @preconcurrency import Metal
 
 /// ML Shader Library managing compute pipelines
-public final class MLShaderLibrary: @unchecked Sendable {
+public actor MLShaderLibrary {
     private let device: MTLDevice
     private let library: MTLLibrary
     private let pipelineCache = NSCache<NSString, MTLComputePipelineState>()
-    private let pipelineLock = NSLock()
     
-    public init(device: MTLDevice) throws {
+    public init(device: MTLDevice) async throws {
         self.device = device
         
         // Try to load compiled library first
@@ -21,22 +20,20 @@ public final class MLShaderLibrary: @unchecked Sendable {
         } else {
             // Compile from source
             let shaderSource = try MLShaderLibrary.loadShaderSource()
-            guard let library = try? device.makeLibrary(source: shaderSource, options: nil) else {
+            guard let library = try? await device.makeLibrary(source: shaderSource, options: nil) else {
                 throw MetalMLError.shaderCompilationFailed("Failed to create Metal library")
             }
             self.library = library
         }
         
         // Pre-compile commonly used pipelines
-        try precompilePipelines()
+        try await precompilePipelines()
     }
     
     // MARK: - Pipeline Management
     
     /// Get or create a compute pipeline for the specified function
-    public func pipeline(for functionName: String) throws -> MTLComputePipelineState {
-        pipelineLock.lock()
-        defer { pipelineLock.unlock() }
+    public func pipeline(for functionName: String) async throws -> MTLComputePipelineState {
         
         let key = functionName as NSString
         if let cachedPipeline = pipelineCache.object(forKey: key) {
@@ -47,7 +44,7 @@ public final class MLShaderLibrary: @unchecked Sendable {
             throw MetalMLError.shaderCompilationFailed("Function '\(functionName)' not found")
         }
         
-        let pipeline = try device.makeComputePipelineState(function: function)
+        let pipeline = try await device.makeComputePipelineState(function: function)
         pipelineCache.setObject(pipeline, forKey: key)
         return pipeline
     }
@@ -55,7 +52,7 @@ public final class MLShaderLibrary: @unchecked Sendable {
     /// Create a compute pipeline for the specified function name
     /// This method provides async compatibility for the pipeline creation process
     public func makeComputePipeline(for functionName: String) async throws -> MTLComputePipelineState {
-        return try pipeline(for: functionName)
+        return try await pipeline(for: functionName)
     }
     
     /// Create a compute pipeline with custom configuration
@@ -63,8 +60,6 @@ public final class MLShaderLibrary: @unchecked Sendable {
         for functionName: String,
         constants: MTLFunctionConstantValues? = nil
     ) async throws -> MTLComputePipelineState {
-        pipelineLock.lock()
-        defer { pipelineLock.unlock() }
         
         // Create unique cache key if constants are provided
         let cacheKey: NSString
@@ -82,10 +77,10 @@ public final class MLShaderLibrary: @unchecked Sendable {
         // Create function with constants if provided
         let function: MTLFunction
         if let constants = constants {
-            guard let baseFunction = library.makeFunction(name: functionName) else {
+            guard library.makeFunction(name: functionName) != nil else {
                 throw MetalMLError.shaderCompilationFailed("Function '\(functionName)' not found in library")
             }
-            function = try baseFunction.makeFunction(constantValues: constants)
+            function = try await library.makeFunction(name: functionName, constantValues: constants)
         } else {
             guard let f = library.makeFunction(name: functionName) else {
                 throw MetalMLError.shaderCompilationFailed("Function '\(functionName)' not found in library")
@@ -95,7 +90,7 @@ public final class MLShaderLibrary: @unchecked Sendable {
         
         // Create pipeline state
         do {
-            let pipeline = try device.makeComputePipelineState(function: function)
+            let pipeline = try await device.makeComputePipelineState(function: function)
             pipelineCache.setObject(pipeline, forKey: cacheKey)
             return pipeline
         } catch {
@@ -105,15 +100,11 @@ public final class MLShaderLibrary: @unchecked Sendable {
     
     /// Clear the pipeline cache to free memory
     public func clearPipelineCache() {
-        pipelineLock.lock()
-        defer { pipelineLock.unlock() }
         pipelineCache.removeAllObjects()
     }
     
     /// Get the number of cached pipelines
     public var cachedPipelineCount: Int {
-        pipelineLock.lock()
-        defer { pipelineLock.unlock() }
         return pipelineCache.countLimit
     }
     
@@ -221,7 +212,7 @@ public final class MLShaderLibrary: @unchecked Sendable {
     
     // MARK: - Private Methods
     
-    private func precompilePipelines() throws {
+    private func precompilePipelines() async throws {
         // Precompile frequently used operations
         let priorityFunctions = [
             MatrixOperation.matmulForward.rawValue,
@@ -235,7 +226,7 @@ public final class MLShaderLibrary: @unchecked Sendable {
         
         for functionName in priorityFunctions {
             do {
-                _ = try pipeline(for: functionName)
+                _ = try await pipeline(for: functionName)
             } catch {
                 failedCompilations.append(functionName)
             }
@@ -400,12 +391,12 @@ public final class MLShaderLibrary: @unchecked Sendable {
 extension MLShaderLibrary {
     
     /// Calculate optimal thread configuration for a given workload
-    public func threadConfiguration(
+    nonisolated public func threadConfiguration(
         for pipeline: MTLComputePipelineState,
         workSize: MTLSize
     ) -> (threadgroupSize: MTLSize, threadgroupCount: MTLSize) {
         let maxThreadsPerThreadgroup = pipeline.maxTotalThreadsPerThreadgroup
-        let threadExecutionWidth = pipeline.threadExecutionWidth
+        _ = pipeline.threadExecutionWidth
         
         // For 1D workloads
         if workSize.height == 1 && workSize.depth == 1 {
@@ -432,7 +423,7 @@ extension MLShaderLibrary {
     }
     
     /// Calculate GPU-adaptive thread configuration based on workload and device capabilities
-    public func adaptiveThreadConfiguration(
+    nonisolated public func adaptiveThreadConfiguration(
         for pipeline: MTLComputePipelineState,
         functionName: String,
         workSize: MTLSize,
@@ -462,7 +453,7 @@ extension MLShaderLibrary {
         }
     }
     
-    private func optimize1DConfiguration(
+    nonisolated private func optimize1DConfiguration(
         workSize: Int,
         maxThreads: Int,
         warpSize: Int,
@@ -510,7 +501,7 @@ extension MLShaderLibrary {
         return (threadgroupSize, threadgroupCount)
     }
     
-    private func optimize2DConfiguration(
+    nonisolated private func optimize2DConfiguration(
         workSize: MTLSize,
         maxThreads: Int,
         warpSize: Int,
@@ -570,7 +561,7 @@ extension MLShaderLibrary {
         return (threadgroupSize, threadgroupCount)
     }
     
-    private func isMemoryBoundOperation(_ functionName: String) -> Bool {
+    nonisolated private func isMemoryBoundOperation(_ functionName: String) -> Bool {
         let memoryBoundOps = [
             "copy", "extract", "split", "concatenate",
             "transpose", "reduce_bias_gradient"
@@ -578,7 +569,7 @@ extension MLShaderLibrary {
         return memoryBoundOps.contains { functionName.contains($0) }
     }
     
-    private func isComputeIntensiveOperation(_ functionName: String) -> Bool {
+    nonisolated private func isComputeIntensiveOperation(_ functionName: String) -> Bool {
         let computeIntensiveOps = [
             "matmul", "conv", "gelu", "swish", "mish",
             "softmax", "layer_norm", "batch_norm"

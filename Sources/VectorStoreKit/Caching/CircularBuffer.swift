@@ -149,10 +149,10 @@ public final class CacheAccessRingBuffer: Sendable {
     }
     
     /// Analyze access patterns in the buffer
-    public func analyzePatterns() -> AccessPatternSummary {
+    public func analyzePatterns() -> CircularBufferAccessSummary {
         let accesses = buffer.elements
         guard !accesses.isEmpty else {
-            return AccessPatternSummary(
+            return CircularBufferAccessSummary(
                 uniqueCount: 0,
                 totalAccesses: 0,
                 hotItems: [],
@@ -172,7 +172,7 @@ public final class CacheAccessRingBuffer: Sendable {
             .filter { $0.value >= threshold }
             .map { $0.key }
         
-        return AccessPatternSummary(
+        return CircularBufferAccessSummary(
             uniqueCount: frequency.count,
             totalAccesses: accesses.count,
             hotItems: Set(hotItems),
@@ -185,7 +185,7 @@ public final class CacheAccessRingBuffer: Sendable {
     }
 }
 
-public struct AccessPatternSummary: Sendable {
+public struct CircularBufferAccessSummary: Sendable {
     public let uniqueCount: Int
     public let totalAccesses: Int
     public let hotItems: Set<VectorID>

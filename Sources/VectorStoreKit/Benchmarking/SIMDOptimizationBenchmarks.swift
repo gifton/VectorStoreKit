@@ -546,7 +546,7 @@ public struct SIMDOptimizationBenchmarks {
                 size: candidates.count
             )),
             queryHistory: QueryHistory(),
-            performanceMetrics: PerformanceMetrics()
+            performanceMetrics: AdaptivePerformanceMetrics()
         )
         
         // Use smaller sample

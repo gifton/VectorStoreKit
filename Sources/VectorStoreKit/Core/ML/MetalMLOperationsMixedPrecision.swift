@@ -70,7 +70,7 @@ public extension MetalMLOperations {
         }
         
         // Use mixed precision kernel
-        let pipeline = try shaderLibrary.pipeline(for: "matmul_mixed_precision")
+        let pipeline = try await shaderLibrary.pipeline(for: "matmul_mixed_precision")
         
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
               let encoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -118,7 +118,7 @@ public extension MetalMLOperations {
         outputSize: Int,
         activation: Activation = .linear
     ) async throws {
-        let pipeline = try shaderLibrary.pipeline(for: "linear_mixed_precision")
+        let pipeline = try await shaderLibrary.pipeline(for: "linear_mixed_precision")
         
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
               let encoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -173,7 +173,7 @@ public extension MetalMLOperations {
         precision: Precision = .fp32
     ) async throws {
         let functionName = precision == .fp32 ? "scale_gradients" : "scale_gradients_fp16"
-        let pipeline = try shaderLibrary.pipeline(for: functionName)
+        let pipeline = try await shaderLibrary.pipeline(for: functionName)
         
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
               let encoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -209,7 +209,7 @@ public extension MetalMLOperations {
         precision: Precision = .fp32
     ) async throws {
         let functionName = precision == .fp32 ? "unscale_gradients" : "unscale_gradients_fp16"
-        let pipeline = try shaderLibrary.pipeline(for: functionName)
+        let pipeline = try await shaderLibrary.pipeline(for: functionName)
         
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
               let encoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -247,7 +247,7 @@ public extension MetalMLOperations {
         gradients: MetalBuffer,         // FP32
         learningRate: Float
     ) async throws {
-        let pipeline = try shaderLibrary.pipeline(for: "sgd_update_mixed_precision")
+        let pipeline = try await shaderLibrary.pipeline(for: "sgd_update_mixed_precision")
         
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
               let encoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -291,7 +291,7 @@ public extension MetalMLOperations {
         epsilon: Float = 1e-8,
         timestep: Int
     ) async throws {
-        let pipeline = try shaderLibrary.pipeline(for: "adam_update_mixed_precision")
+        let pipeline = try await shaderLibrary.pipeline(for: "adam_update_mixed_precision")
         
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
               let encoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -347,7 +347,7 @@ public extension MetalMLOperations {
         batchSize: Int,
         channels: Int
     ) async throws {
-        let pipeline = try shaderLibrary.pipeline(for: "batchnorm_mixed_precision")
+        let pipeline = try await shaderLibrary.pipeline(for: "batchnorm_mixed_precision")
         
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
               let encoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -393,7 +393,7 @@ public extension MetalMLOperations {
     func reduceSumMixedPrecision(
         _ input: MixedPrecisionBuffer
     ) async throws -> Float {
-        let pipeline = try shaderLibrary.pipeline(for: "reduce_sum_mixed_precision")
+        let pipeline = try await shaderLibrary.pipeline(for: "reduce_sum_mixed_precision")
         
         var currentSize = input.elementCount
         var inputBuffer = input.buffer

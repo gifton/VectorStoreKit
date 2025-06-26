@@ -4,6 +4,9 @@
 
 import Foundation
 import os.log
+#if canImport(Darwin)
+import Darwin
+#endif
 #if canImport(UIKit)
 import UIKit
 #elseif canImport(AppKit)
@@ -13,7 +16,7 @@ import AppKit
 // MARK: - Memory Pressure Level
 
 /// Memory pressure levels
-public enum MemoryPressureLevel: Int, Sendable {
+public enum MemoryPressureLevel: Int, Sendable, Comparable {
     case normal = 0
     case warning = 1
     case urgent = 2
@@ -26,6 +29,10 @@ public enum MemoryPressureLevel: Int, Sendable {
         case .urgent: return "Urgent"
         case .critical: return "Critical"
         }
+    }
+    
+    public static func < (lhs: MemoryPressureLevel, rhs: MemoryPressureLevel) -> Bool {
+        return lhs.rawValue < rhs.rawValue
     }
 }
 
@@ -162,7 +169,7 @@ public actor MemoryPressureHandler {
     private func setupMacOSMonitoring() {
         // Create dispatch source for memory pressure events
         memoryPressureSource = DispatchSource.makeMemoryPressureSource(
-            eventMask: [.warning, .urgent, .critical],
+            eventMask: [.warning, .critical],
             queue: .global(qos: .background)
         )
         
@@ -232,6 +239,7 @@ public actor MemoryPressureHandler {
     
     #if os(macOS)
     private func getMacOSMemoryInfo() -> (total: Int64, used: Int64, available: Int64) {
+        #if canImport(Darwin)
         var info = mach_task_basic_info()
         var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size) / 4
         
@@ -251,6 +259,7 @@ public actor MemoryPressureHandler {
             
             return (total: Int64(total), used: used, available: available)
         }
+        #endif
         
         // Fallback
         let total = ProcessInfo.processInfo.physicalMemory
@@ -260,6 +269,7 @@ public actor MemoryPressureHandler {
     
     #if os(iOS)
     private func getiOSMemoryInfo() -> (total: Int64, used: Int64, available: Int64) {
+        #if canImport(Darwin)
         var info = mach_task_basic_info()
         var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size) / 4
         
@@ -279,6 +289,7 @@ public actor MemoryPressureHandler {
             
             return (total: Int64(total), used: used, available: available)
         }
+        #endif
         
         // Fallback
         let total = ProcessInfo.processInfo.physicalMemory

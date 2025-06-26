@@ -164,7 +164,7 @@ extension VectorStoreCLI {
         
         // MARK: - Metrics Collection
         
-        private func collectMetrics(config: StoreConfig) async throws -> PerformanceMetrics {
+        private func collectMetrics(config: StoreConfig) async throws -> CLIPerformanceMetrics {
             // TODO: Connect to actual VectorStore metrics
             // For now, generate realistic demo metrics
             
@@ -218,7 +218,7 @@ extension VectorStoreCLI {
                 averageKernelTime: Double.random(in: 0.1...2.0)
             ) : nil
             
-            return PerformanceMetrics(
+            return CLIPerformanceMetrics(
                 timestamp: Date(),
                 queryMetrics: queryMetrics,
                 insertMetrics: insertMetrics,
@@ -231,7 +231,7 @@ extension VectorStoreCLI {
         
         // MARK: - Display Methods
         
-        private func displayDashboard(metrics: PerformanceMetrics, config: StoreConfig) {
+        private func displayDashboard(metrics: CLIPerformanceMetrics, config: StoreConfig) {
             // Clear screen and reset cursor
             print("\u{1B}[2J\u{1B}[H")
             
@@ -289,7 +289,7 @@ extension VectorStoreCLI {
             print("Press Ctrl+C to stop")
         }
         
-        private func displaySnapshot(metrics: PerformanceMetrics, config: StoreConfig) {
+        private func displaySnapshot(metrics: CLIPerformanceMetrics, config: StoreConfig) {
             print("Performance Snapshot")
             print("Time: \(DateFormatter.localizedString(from: metrics.timestamp, dateStyle: .short, timeStyle: .medium))")
             print(String(repeating: "=", count: 60))
@@ -339,7 +339,7 @@ extension VectorStoreCLI {
 
 // MARK: - Supporting Types
 
-struct PerformanceMetrics: Codable {
+struct CLIPerformanceMetrics: Codable {
     let timestamp: Date
     let queryMetrics: QueryMetrics
     let insertMetrics: InsertMetrics
@@ -401,7 +401,7 @@ struct MetalMetrics: Codable {
 
 struct MetricsSnapshot: Codable {
     let timestamp: Date
-    let metrics: PerformanceMetrics
+    let metrics: CLIPerformanceMetrics
 }
 
 struct RecordingData: Codable {

@@ -596,7 +596,11 @@ protocol TrainableIndex {
 extension IVFIndex: TrainableIndex {
     func train() async throws {
         // IVF doesn't support training without samples
-        throw VectorStoreError.operationNotSupported("IVF requires training samples")
+        throw VectorStoreError(
+            category: .indexOperation,
+            code: .preconditionFailed,
+            message: "IVF requires training samples"
+        )
     }
 }
 

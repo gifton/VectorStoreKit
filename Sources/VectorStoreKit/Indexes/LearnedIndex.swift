@@ -101,7 +101,7 @@ private actor NeuralModel {
             guard let device = MTLCreateSystemDefaultDevice() else {
                 throw MetalMLError.commandQueueCreationFailed
             }
-            self.metalPipeline = try MetalMLPipeline(device: device)
+            self.metalPipeline = try await MetalMLPipeline(device: device)
         }
         
         // Initialize neural network

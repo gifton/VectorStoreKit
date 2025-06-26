@@ -252,7 +252,7 @@ extension DistanceComputation512 {
                 params.adaptiveContext = AdaptiveDistance.Context(
                     dataStatistics: analysis.statistics,
                     queryHistory: QueryHistory(),
-                    performanceMetrics: PerformanceMetrics()
+                    performanceMetrics: AdaptivePerformanceMetrics()
                 )
             }
             

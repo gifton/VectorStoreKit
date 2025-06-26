@@ -42,7 +42,7 @@ public actor MetalMLOperations {
             throw MetalMLError.invalidBufferSize("Invalid matmul dimensions or buffer sizes")
         }
         let functionName = useTiling ? MLShaderLibrary.MatrixOperation.matmulTiled : .matmulForward
-        let pipeline = try shaderLibrary.pipeline(for: functionName.rawValue)
+        let pipeline = try await shaderLibrary.pipeline(for: functionName.rawValue)
         
         try await asyncQueue.submitAsync { commandBuffer in
             guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -87,7 +87,7 @@ public actor MetalMLOperations {
               rows > 0, cols > 0 else {
             throw MetalMLError.invalidBufferSize("Invalid addBias dimensions or buffer sizes")
         }
-        let pipeline = try shaderLibrary.pipeline(for: MLShaderLibrary.MatrixOperation.addBias.rawValue)
+        let pipeline = try await shaderLibrary.pipeline(for: MLShaderLibrary.MatrixOperation.addBias.rawValue)
         
         try await asyncQueue.submitAsync { commandBuffer in
             guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -149,7 +149,7 @@ public actor MetalMLOperations {
             return
         }
         
-        let pipeline = try shaderLibrary.pipeline(for: functionName)
+        let pipeline = try await shaderLibrary.pipeline(for: functionName)
         
         try await asyncQueue.submitAsync { commandBuffer in
             guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -160,7 +160,7 @@ public actor MetalMLOperations {
             encoder.setBuffer(input.buffer, offset: 0, index: 0)
             encoder.setBuffer(output.buffer, offset: 0, index: 1)
             
-            if activation.isParametric {
+            if activation.hasParameters {
                 var localAlpha = alpha
                 encoder.setBytes(&localAlpha, length: MemoryLayout<Float>.size, index: 2)
                 var size = UInt32(input.count)
@@ -210,7 +210,7 @@ public actor MetalMLOperations {
             return
         }
         
-        let pipeline = try shaderLibrary.pipeline(for: functionName)
+        let pipeline = try await shaderLibrary.pipeline(for: functionName)
         
         try await asyncQueue.submitAsync { commandBuffer in
             guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -232,7 +232,7 @@ public actor MetalMLOperations {
                 bufferIndex = 4
             }
             
-            if activation.isParametric {
+            if activation.hasParameters {
                 var localAlpha = alpha
                 encoder.setBytes(&localAlpha, length: MemoryLayout<Float>.size, index: bufferIndex)
                 bufferIndex += 1
@@ -271,7 +271,7 @@ public actor MetalMLOperations {
               outputSize > 0, inputSize > 0 else {
             throw MetalMLError.invalidBufferSize("Invalid weight gradient dimensions or buffer sizes")
         }
-        let pipeline = try shaderLibrary.pipeline(for: "outer_product")
+        let pipeline = try await shaderLibrary.pipeline(for: "outer_product")
         
         try await asyncQueue.submitAsync { commandBuffer in
             guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -343,7 +343,7 @@ public actor MetalMLOperations {
             throw MetalMLError.invalidBufferSize("Incompatible buffer sizes for addition")
         }
         
-        let pipeline = try shaderLibrary.pipeline(for: "element_add")
+        let pipeline = try await shaderLibrary.pipeline(for: "element_add")
         
         try await asyncQueue.submitAsync { commandBuffer in
             guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -384,7 +384,7 @@ public actor MetalMLOperations {
             throw MetalMLError.numericalInstability("Invalid scale factor")
         }
         
-        let pipeline = try shaderLibrary.pipeline(for: "scale_buffer")
+        let pipeline = try await shaderLibrary.pipeline(for: "scale_buffer")
         
         try await asyncQueue.submitAsync { commandBuffer in
             guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -440,7 +440,7 @@ extension MetalMLOperations {
     ) async throws {
         // Use vectorized version for better SIMD efficiency
         let functionName = "fusedLinearActivationVec4"
-        let pipeline = try shaderLibrary.pipeline(for: functionName)
+        let pipeline = try await shaderLibrary.pipeline(for: functionName)
         
         // Create activation parameters
         var activationType: UInt32
@@ -546,7 +546,7 @@ public extension MetalMLOperations {
         }
         
         // Use the kernel-based norm clipping for efficiency
-        let pipeline = try shaderLibrary.pipeline(for: "clip_gradients_by_norm")
+        let pipeline = try await shaderLibrary.pipeline(for: "clip_gradients_by_norm")
         
         // First compute the global norm
         let norm = try await computeL2Norm(gradients)
@@ -594,7 +594,7 @@ public extension MetalMLOperations {
             throw MetalMLError.invalidBufferSize("Invalid gradient clipping range")
         }
         
-        let pipeline = try shaderLibrary.pipeline(for: "clip_gradients_by_value")
+        let pipeline = try await shaderLibrary.pipeline(for: "clip_gradients_by_value")
         
         try await asyncQueue.submitAsync { commandBuffer in
             guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -690,7 +690,7 @@ public extension MetalMLOperations {
         operation: String
     ) async throws {
         let functionName = "element_\(operation)"
-        let pipeline = try shaderLibrary.pipeline(for: functionName)
+        let pipeline = try await shaderLibrary.pipeline(for: functionName)
         
         try await asyncQueue.submitAsync { commandBuffer in
             guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -728,7 +728,7 @@ public extension MetalMLOperations {
         }
         
         // For larger buffers, use parallel reduction
-        let pipeline = try shaderLibrary.pipeline(for: "reduce_sum")
+        let pipeline = try await shaderLibrary.pipeline(for: "reduce_sum")
         var currentSize = buffer.count
         var inputBuffer = buffer
         
@@ -821,7 +821,7 @@ extension MetalMLOperations {
         let parameters: [Float]
     }
     
-    public enum BatchOperationType {
+    public enum BatchOperationType: Hashable {
         case elementAdd
         case elementMultiply
         case scaleBuffer
@@ -847,7 +847,7 @@ extension MetalMLOperations {
                 
                 // Process all operations of the same type
                 for (index, op) in ops.enumerated() {
-                    try self.encodeBatchOperation(
+                    try await self.encodeBatchOperation(
                         encoder: encoder,
                         operation: op,
                         batchIndex: index
@@ -888,7 +888,7 @@ extension MetalMLOperations {
         
         // For larger batches, use batched kernel
         let functionName = "batch_matmul"
-        let pipeline = try shaderLibrary.pipeline(for: functionName)
+        let pipeline = try await shaderLibrary.pipeline(for: functionName)
         
         try await asyncQueue.submitAsync { commandBuffer in
             guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -979,10 +979,10 @@ extension MetalMLOperations {
         encoder: MTLComputeCommandEncoder,
         operation: BatchOperation,
         batchIndex: Int
-    ) throws {
+    ) async throws {
         switch operation.type {
         case .elementAdd:
-            let pipeline = try shaderLibrary.pipeline(for: "element_add")
+            let pipeline = try await shaderLibrary.pipeline(for: "element_add")
             encoder.setComputePipelineState(pipeline)
             encoder.setBuffer(operation.inputs[0].buffer, offset: 0, index: 0)
             encoder.setBuffer(operation.inputs[1].buffer, offset: 0, index: 1)
@@ -1002,7 +1002,7 @@ extension MetalMLOperations {
             encoder.dispatchThreadgroups(threadgroupCount, threadsPerThreadgroup: threadgroupSize)
             
         case .scaleBuffer:
-            let pipeline = try shaderLibrary.pipeline(for: "scale_buffer")
+            let pipeline = try await shaderLibrary.pipeline(for: "scale_buffer")
             encoder.setComputePipelineState(pipeline)
             encoder.setBuffer(operation.inputs[0].buffer, offset: 0, index: 0)
             encoder.setBuffer(operation.outputs[0].buffer, offset: 0, index: 1)
@@ -1027,5 +1027,41 @@ extension MetalMLOperations {
             // Handle other operation types as needed
             break
         }
+    }
+    
+    // MARK: - Buffer Pool Access Methods
+    
+    /// Acquire a buffer from the internal buffer pool
+    /// - Parameter size: Size of the buffer in elements (not bytes)
+    /// - Returns: A MetalBuffer from the pool
+    /// - Note: Caller is responsible for releasing the buffer back to the pool
+    internal func acquireBuffer(size: Int) async throws -> MetalBuffer {
+        return try await bufferPool.acquire(size: size)
+    }
+    
+    /// Release a buffer back to the internal buffer pool
+    /// - Parameter buffer: The buffer to release
+    /// - Note: Buffer can be reused after release
+    internal func releaseBuffer(_ buffer: MetalBuffer) async {
+        await bufferPool.release(buffer)
+    }
+    
+    /// Execute an operation with a temporary buffer that is automatically released
+    /// - Parameters:
+    ///   - size: Size of the buffer in elements
+    ///   - operation: The operation to perform with the buffer
+    /// - Returns: The result of the operation
+    /// - Note: Buffer is automatically released even if operation throws
+    internal func withTemporaryBuffer<T>(
+        size: Int,
+        operation: (MetalBuffer) async throws -> T
+    ) async throws -> T {
+        let buffer = try await acquireBuffer(size: size)
+        defer {
+            Task {
+                await releaseBuffer(buffer)
+            }
+        }
+        return try await operation(buffer)
     }
 }

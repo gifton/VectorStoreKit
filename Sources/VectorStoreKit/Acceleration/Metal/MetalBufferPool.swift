@@ -168,7 +168,4 @@ extension MetalBufferPool: MemoryManagedBufferPool {
     }
 }
 
-/// Errors for buffer pool operations
-public enum MetalBufferPoolError: Error {
-    case allocationFailed
-}
+// MetalBufferPoolError is defined in Core/MetalAccelerationTypes.swift

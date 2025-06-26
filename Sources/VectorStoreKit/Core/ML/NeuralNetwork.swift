@@ -198,7 +198,7 @@ public actor NeuralNetwork {
             functionName = MLShaderLibrary.LossFunction.crossEntropyLoss.rawValue
         }
         
-        let pipeline = try shaderLibrary.pipeline(for: functionName)
+        let pipeline = try await shaderLibrary.pipeline(for: functionName)
         
         try await commandQueue.submitAsync { commandBuffer in
             guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -265,7 +265,7 @@ public actor NeuralNetwork {
             functionName = MLShaderLibrary.LossFunction.crossEntropyGradient.rawValue
         }
         
-        let pipeline = try shaderLibrary.pipeline(for: functionName)
+        let pipeline = try await shaderLibrary.pipeline(for: functionName)
         
         try await commandQueue.submitAsync { commandBuffer in
             guard let encoder = commandBuffer.makeComputeCommandEncoder() else {

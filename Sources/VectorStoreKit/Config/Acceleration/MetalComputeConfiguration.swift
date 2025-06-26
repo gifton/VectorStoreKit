@@ -31,4 +31,17 @@ public struct MetalComputeConfiguration: Sendable {
         enableProfiling: false,
         bufferPoolConfig: .efficient
     )
+    
+    public static let appleSilicon = MetalComputeConfiguration(
+        minBatchSizeForGPU: 1000,
+        enableProfiling: true,
+        bufferPoolConfig: .research
+    )
+    
+    /// Validate the configuration
+    public func validate() throws {
+        if minBatchSizeForGPU <= 0 {
+            throw VectorStoreError.configurationInvalid("minBatchSizeForGPU must be positive")
+        }
+    }
 }

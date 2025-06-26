@@ -100,7 +100,7 @@ struct AdvancedDistanceMetricsExample {
             querySpecificAdjustment: 1.1
         )
         
-        let performanceMetrics = PerformanceMetrics(
+        let performanceMetrics = AdaptivePerformanceMetrics(
             metricPerformance: [
                 "euclidean": MetricPerformance(accuracy: 0.9, speed: 0.95, consistency: 0.85),
                 "cosine": MetricPerformance(accuracy: 0.85, speed: 0.9, consistency: 0.9)

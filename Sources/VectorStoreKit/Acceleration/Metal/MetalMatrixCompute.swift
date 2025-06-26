@@ -40,13 +40,13 @@ public actor MetalMatrixCompute {
         if let commandBufferPool = commandBufferPool {
             self.commandBufferPool = commandBufferPool
         } else {
-            self.commandBufferPool = MetalCommandBufferPool(device: device, profiler: profiler)
+            self.commandBufferPool = await MetalCommandBufferPool(device: device.device, profiler: profiler)
         }
         
         if let batchOptimizer = batchOptimizer {
             self.batchOptimizer = batchOptimizer
         } else {
-            self.batchOptimizer = await MetalBatchOptimizer(device: device, profiler: profiler)
+            self.batchOptimizer = await MetalBatchOptimizer(device: device.device, profiler: profiler)
         }
     }
     

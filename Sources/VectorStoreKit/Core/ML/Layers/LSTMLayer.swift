@@ -511,7 +511,7 @@ public actor LSTMLayer: NeuralLayer {
     ) async throws -> MetalBuffer {
         let commandQueue = await metalPipeline.getMetalCommandQueue()
         let shaderLibrary = await metalPipeline.getShaderLibrary()
-        let pipeline = try shaderLibrary.pipeline(for: MLShaderLibrary.MatrixOperation.extractTimestep.rawValue)
+        let pipeline = try await shaderLibrary.pipeline(for: MLShaderLibrary.MatrixOperation.extractTimestep.rawValue)
         
         let output = try await allocateBuffer(size: batchSize * inputSize)
         
@@ -656,7 +656,7 @@ public actor LSTMLayer: NeuralLayer {
         // f_t * c_{t-1}
         let commandQueue = await metalPipeline.getMetalCommandQueue()
         let shaderLibrary = await metalPipeline.getShaderLibrary()
-        let multiplyPipeline = try shaderLibrary.pipeline(for: MLShaderLibrary.ElementwiseOperation.elementMultiply.rawValue)
+        let multiplyPipeline = try await shaderLibrary.pipeline(for: MLShaderLibrary.ElementwiseOperation.elementMultiply.rawValue)
         
         try await commandQueue.submitAsync { commandBuffer in
             guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -723,7 +723,7 @@ public actor LSTMLayer: NeuralLayer {
         // Element-wise multiply
         let commandQueue = await metalPipeline.getMetalCommandQueue()
         let shaderLibrary = await metalPipeline.getShaderLibrary()
-        let multiplyPipeline = try shaderLibrary.pipeline(for: MLShaderLibrary.ElementwiseOperation.elementMultiply.rawValue)
+        let multiplyPipeline = try await shaderLibrary.pipeline(for: MLShaderLibrary.ElementwiseOperation.elementMultiply.rawValue)
         
         try await commandQueue.submitAsync { commandBuffer in
             guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -754,7 +754,7 @@ public actor LSTMLayer: NeuralLayer {
         
         let commandQueue = await metalPipeline.getMetalCommandQueue()
         let shaderLibrary = await metalPipeline.getShaderLibrary()
-        let concatenatePipeline = try shaderLibrary.pipeline(for: MLShaderLibrary.MatrixOperation.concatenateSequence.rawValue)
+        let concatenatePipeline = try await shaderLibrary.pipeline(for: MLShaderLibrary.MatrixOperation.concatenateSequence.rawValue)
         
         // First, copy all outputs to a temporary buffer
         let tempBuffer = try await allocateBuffer(size: totalSize)
@@ -803,7 +803,7 @@ public actor LSTMLayer: NeuralLayer {
     ) async throws -> MetalBuffer {
         let commandQueue = await metalPipeline.getMetalCommandQueue()
         let shaderLibrary = await metalPipeline.getShaderLibrary()
-        let pipeline = try shaderLibrary.pipeline(for: MLShaderLibrary.MatrixOperation.extractTimestepGrad.rawValue)
+        let pipeline = try await shaderLibrary.pipeline(for: MLShaderLibrary.MatrixOperation.extractTimestepGrad.rawValue)
         
         let output = try await allocateBuffer(size: hiddenSize)
         
@@ -891,7 +891,7 @@ public actor LSTMLayer: NeuralLayer {
         
         // First multiply grad_h_t * tanh(c_t)
         let temp_grad_o = try await allocateBuffer(size: hiddenSize)
-        let elementMultiplyPipeline = try shaderLibrary.pipeline(for: MLShaderLibrary.ElementwiseOperation.elementMultiply.rawValue)
+        let elementMultiplyPipeline = try await shaderLibrary.pipeline(for: MLShaderLibrary.ElementwiseOperation.elementMultiply.rawValue)
         
         try await commandQueue.submitAsync { commandBuffer in
             guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -913,7 +913,7 @@ public actor LSTMLayer: NeuralLayer {
         }
         
         // Then apply sigmoid derivative: result * o_t * (1 - o_t)
-        let sigmoidBackwardPipeline = try shaderLibrary.pipeline(for: MLShaderLibrary.ActivationFunction.sigmoidBackward.rawValue)
+        let sigmoidBackwardPipeline = try await shaderLibrary.pipeline(for: MLShaderLibrary.ActivationFunction.sigmoidBackward.rawValue)
         try await commandQueue.submitAsync { commandBuffer in
             guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
                 throw MetalMLError.encoderCreationFailed
@@ -956,7 +956,7 @@ public actor LSTMLayer: NeuralLayer {
         }
         
         // Apply tanh derivative
-        let tanhBackwardPipeline = try shaderLibrary.pipeline(for: MLShaderLibrary.ActivationFunction.tanhBackward.rawValue)
+        let tanhBackwardPipeline = try await shaderLibrary.pipeline(for: MLShaderLibrary.ActivationFunction.tanhBackward.rawValue)
         let tanh_deriv_result = try await allocateBuffer(size: hiddenSize)
         try await commandQueue.submitAsync { commandBuffer in
             guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -1255,7 +1255,7 @@ public actor LSTMLayer: NeuralLayer {
             // W is [hiddenSize x inputSize], grad_gate is [hiddenSize x 1]
             // W^T @ grad_gate gives [inputSize x 1]
             // Use matmul_backward_B which computes A^T @ gradC
-            let matmulBackwardBPipeline = try shaderLibrary.pipeline(for: MLShaderLibrary.MatrixOperation.matmulBackwardB.rawValue)
+            let matmulBackwardBPipeline = try await shaderLibrary.pipeline(for: MLShaderLibrary.MatrixOperation.matmulBackwardB.rawValue)
             
             try await commandQueue.submitAsync { commandBuffer in
                 guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -1328,7 +1328,7 @@ public actor LSTMLayer: NeuralLayer {
         // Outer product: result[i,j] = a[i] * b[j]
         let commandQueue = await metalPipeline.getMetalCommandQueue()
         let shaderLibrary = await metalPipeline.getShaderLibrary()
-        let outerProductPipeline = try shaderLibrary.pipeline(for: MLShaderLibrary.MatrixOperation.outerProduct.rawValue)
+        let outerProductPipeline = try await shaderLibrary.pipeline(for: MLShaderLibrary.MatrixOperation.outerProduct.rawValue)
         
         try await commandQueue.submitAsync { commandBuffer in
             guard let encoder = commandBuffer.makeComputeCommandEncoder() else {

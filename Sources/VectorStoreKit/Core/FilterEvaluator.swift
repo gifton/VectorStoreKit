@@ -38,7 +38,7 @@ public actor FilterEvaluator {
             guard let device = MTLCreateSystemDefaultDevice() else {
                 throw VectorStoreError.metalDeviceUnavailable()
             }
-            pipeline = try MetalMLPipeline(device: device)
+            pipeline = try await MetalMLPipeline(device: device)
         }
         
         self.metalPipeline = pipeline

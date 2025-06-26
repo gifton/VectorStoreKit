@@ -8,6 +8,9 @@
 
 import Foundation
 import Metal
+#if os(iOS) || os(tvOS)
+import UIKit
+#endif
 
 /// Buffer pool for reducing allocation overhead
 /// 
