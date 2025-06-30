@@ -5,6 +5,25 @@
 import Foundation
 import simd
 
+// MARK: - Supporting Types
+
+/// Data size categories for optimization
+public enum DataSize: String, Sendable {
+    case small = "small"     // < 100K vectors
+    case medium = "medium"   // 100K - 1M vectors
+    case large = "large"     // 1M - 10M vectors
+    case xlarge = "xlarge"   // > 10M vectors
+    
+    var cacheSize: Int {
+        switch self {
+        case .small: return 100_000_000    // 100MB
+        case .medium: return 500_000_000   // 500MB
+        case .large: return 1_000_000_000  // 1GB
+        case .xlarge: return 2_000_000_000 // 2GB
+        }
+    }
+}
+
 // MARK: - Vector Universe Builder
 
 /// Entry point for building vector stores using a fluent API
@@ -18,7 +37,7 @@ import simd
 /// ```swift
 /// let store = try await VectorUniverse<SIMD768<Float>, DocumentMetadata>()
 ///     .indexing(HNSWIndexingStrategy(maxConnections: 32))
-///     .storage(HierarchicalResearchStorageStrategy())
+///     .storage(ResearchStorageStrategy())
 ///     .caching(LRUCachingStrategy(maxMemory: 500_000_000))
 ///     .materialize()
 /// ```
@@ -54,8 +73,6 @@ public struct VectorUniverse<Vector: SIMD & Sendable, Metadata: Codable & Sendab
     /// ## Available Strategies
     /// - `HNSWIndexingStrategy`: High-performance approximate search
     /// - `IVFIndexingStrategy`: Scalable inverted file index
-    /// - `HybridIndexingStrategy`: Adaptive multi-algorithm approach
-    /// - `LearnedIndexingStrategy`: ML-based learned index
     public func indexing<I: IndexingStrategy>(
         _ strategy: I
     ) -> IndexedUniverse<Vector, Metadata, I> 
@@ -64,6 +81,124 @@ public struct VectorUniverse<Vector: SIMD & Sendable, Metadata: Codable & Sendab
             configuration: configuration,
             indexingStrategy: strategy
         )
+    }
+}
+
+// MARK: - Quick Presets
+
+public extension VectorUniverse {
+    /// Quick start configuration with simple memory storage for rapid prototyping
+    /// - Returns: A fully configured universe optimized for quick development
+    func quickStart() -> FullyConfiguredUniverse<
+        Vector,
+        Metadata,
+        HNSWIndexingStrategy<Vector, Metadata>,
+        SimpleStorageStrategy,
+        NoOpCachingStrategy<Vector>
+    > {
+        self.indexing(HNSWIndexingStrategy<Vector, Metadata>(
+            maxConnections: 16,
+            efConstruction: 200
+        ))
+        .storage(SimpleStorageStrategy())
+        .caching(NoOpCachingStrategy<Vector>())
+    }
+    
+    /// Research configuration with all features enabled
+    /// - Returns: A fully configured universe optimized for research with adaptive strategies
+    func research() -> FullyConfiguredUniverse<
+        Vector, 
+        Metadata,
+        IVFIndexingStrategy<Vector, Metadata>,
+        ResearchStorageStrategy,
+        LRUCachingStrategy<Vector>
+    > {
+        self.indexing(IVFIndexingStrategy<Vector, Metadata>(
+            numClusters: 1024,
+            nprobe: 16
+        ))
+            .storage(ResearchStorageStrategy())
+            .caching(LRUCachingStrategy<Vector>())
+    }
+    
+    /// Production configuration optimized for reliability and performance
+    /// - Parameter dataSize: Expected data size to optimize configuration
+    /// - Returns: A fully configured universe optimized for production use
+    func production(
+        dataSize: DataSize = .medium
+    ) -> FullyConfiguredUniverse<
+        Vector,
+        Metadata,
+        HNSWIndexingStrategy<Vector, Metadata>,
+        ThreeTierStorageStrategy,
+        LRUCachingStrategy<Vector>
+    > {
+        let (m, efConstruction) = dataSize.hnswParameters()
+        
+        return self.indexing(HNSWIndexingStrategy<Vector, Metadata>(
+            maxConnections: m,
+            efConstruction: efConstruction
+        ))
+        .storage(ThreeTierStorageStrategy())
+        .caching(LRUCachingStrategy<Vector>(maxMemory: dataSize.cacheSize))
+    }
+    
+    /// Enterprise configuration with 3-tier storage and automatic migration
+    /// - Parameter config: Optional 3-tier storage configuration
+    /// - Returns: A fully configured universe optimized for enterprise use
+    func enterprise(
+        storageConfig: ThreeTierStorageConfiguration? = nil
+    ) -> FullyConfiguredUniverse<
+        Vector,
+        Metadata,
+        HNSWIndexingStrategy<Vector, Metadata>,
+        ThreeTierStorageStrategy,
+        LRUCachingStrategy<Vector>
+    > {
+        self.indexing(HNSWIndexingStrategy<Vector, Metadata>(
+            maxConnections: 32,
+            efConstruction: 800
+        ))
+        .storage(ThreeTierStorageStrategy(configuration: storageConfig))
+        .caching(LRUCachingStrategy<Vector>())
+    }
+    
+    /// Embedded configuration for on-device usage with minimal resources
+    /// - Parameter maxMemory: Maximum memory allocation in bytes
+    /// - Returns: A fully configured universe optimized for embedded/mobile use
+    func embedded(
+        maxMemory: Int = 100_000_000 // 100MB
+    ) -> FullyConfiguredUniverse<
+        Vector,
+        Metadata,
+        HNSWIndexingStrategy<Vector, Metadata>,
+        InMemoryPerformanceStorageStrategy,
+        NoOpCachingStrategy<Vector>
+    > {
+        self.indexing(HNSWIndexingStrategy<Vector, Metadata>(
+            maxConnections: 8,
+            efConstruction: 100
+        ))
+        .storage(InMemoryPerformanceStorageStrategy())
+        .caching(NoOpCachingStrategy<Vector>())
+    }
+}
+
+// MARK: - DataSize Extensions
+
+private extension DataSize {
+    /// Get recommended HNSW parameters for data size
+    func hnswParameters() -> (m: Int, efConstruction: Int) {
+        switch self {
+        case .small:
+            return (m: 12, efConstruction: 100)
+        case .medium:
+            return (m: 16, efConstruction: 200)
+        case .large:
+            return (m: 24, efConstruction: 400)
+        case .xlarge:
+            return (m: 32, efConstruction: 800)
+        }
     }
 }
 
@@ -278,33 +413,22 @@ extension VectorUniverse {
     public static func quickStart(
         maxConnections: Int = 16,
         cacheMemory: Int = 100_000_000
-    ) -> FullyConfiguredUniverse<Vector, Metadata, HNSWIndexingStrategy<Vector, Metadata>, HierarchicalResearchStorageStrategy, LRUCachingStrategy<Vector>> {
+    ) -> FullyConfiguredUniverse<Vector, Metadata, HNSWIndexingStrategy<Vector, Metadata>, ResearchStorageStrategy, LRUCachingStrategy<Vector>> {
         VectorUniverse<Vector, Metadata>()
             .indexing(HNSWIndexingStrategy<Vector, Metadata>(maxConnections: maxConnections))
-            .storage(HierarchicalResearchStorageStrategy())
+            .storage(ResearchStorageStrategy())
             .caching(LRUCachingStrategy(maxMemory: cacheMemory))
     }
     
     /// Research configuration with advanced features
-    public static func research() -> FullyConfiguredUniverse<Vector, Metadata, HNSWIndexingStrategy<Vector, Metadata>, HierarchicalResearchStorageStrategy, LRUCachingStrategy<Vector>> {
+    public static func research() -> FullyConfiguredUniverse<Vector, Metadata, HNSWIndexingStrategy<Vector, Metadata>, ResearchStorageStrategy, LRUCachingStrategy<Vector>> {
         VectorUniverse<Vector, Metadata>()
             .indexing(HNSWIndexingStrategy<Vector, Metadata>(
                 maxConnections: 32,
                 efConstruction: 400,
                 useAdaptiveTuning: true
             ))
-            .storage(HierarchicalResearchStorageStrategy(
-                customConfig: HierarchicalStorage.Configuration(
-                    hotTierMemoryLimit: 1_000_000_000,
-                    warmTierFileSizeLimit: 10_000_000_000,
-                    coldTierCompression: .zstd,
-                    encryptionSettings: .chacha20,
-                    migrationSettings: .intelligent,
-                    walConfiguration: .highPerformance,
-                    monitoringSettings: .comprehensive,
-                    baseDirectory: FileManager.default.temporaryDirectory.appendingPathComponent("vectorstore/research")
-                )
-            ))
+            .storage(ResearchStorageStrategy())
             .caching(LRUCachingStrategy<Vector>(maxMemory: 500_000_000))
     }
 }

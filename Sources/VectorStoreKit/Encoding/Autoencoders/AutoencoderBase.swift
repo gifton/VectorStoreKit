@@ -14,7 +14,7 @@ public struct StandardAutoencoderConfiguration: AutoencoderConfiguration {
     public let encoderActivation: Activation
     public let decoderActivation: Activation
     public let finalActivation: Activation
-    public let training: TrainingConfiguration
+    public let training: AutoencoderTrainingConfiguration
     public let regularization: RegularizationConfig
     
     public init(
@@ -25,7 +25,7 @@ public struct StandardAutoencoderConfiguration: AutoencoderConfiguration {
         encoderActivation: Activation = .relu,
         decoderActivation: Activation = .relu,
         finalActivation: Activation = .tanh,
-        training: TrainingConfiguration = TrainingConfiguration(),
+        training: AutoencoderTrainingConfiguration = AutoencoderTrainingConfiguration(),
         regularization: RegularizationConfig = RegularizationConfig()
     ) {
         self.inputDimensions = inputDimensions
@@ -403,7 +403,7 @@ public actor AutoencoderBase: Autoencoder {
     
     private func updateLearningRate(
         optimizer: any Optimizer,
-        schedule: TrainingConfiguration.LearningRateSchedule,
+        schedule: AutoencoderTrainingConfiguration.LearningRateSchedule,
         epoch: Int,
         step: Int
     ) async {

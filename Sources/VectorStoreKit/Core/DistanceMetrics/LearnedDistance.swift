@@ -131,7 +131,6 @@ public class NeuralDistanceModel: LearnedDistanceModel {
     }
     
     /// SIMD-optimized neural network forward pass
-    @inlinable
     public func computeDistance(_ a: Vector512, _ b: Vector512) throws -> Float {
         // Concatenate vectors using SIMD
         var input = [Float](repeating: 0, count: 1024)
@@ -143,9 +142,9 @@ public class NeuralDistanceModel: LearnedDistanceModel {
         input.withUnsafeMutableBufferPointer { inputPtr in
             aArray.withUnsafeBufferPointer { aPtr in
                 bArray.withUnsafeBufferPointer { bPtr in
-                    let inputSIMD = inputPtr.baseAddress!.assumingMemoryBound(to: SIMD8<Float>.self)
-                    let aSIMD = aPtr.baseAddress!.assumingMemoryBound(to: SIMD8<Float>.self)
-                    let bSIMD = bPtr.baseAddress!.assumingMemoryBound(to: SIMD8<Float>.self)
+                    let inputSIMD = inputPtr.baseAddress!.withMemoryRebound(to: SIMD8<Float>.self, capacity: 64) { $0 }
+                    let aSIMD = aPtr.baseAddress!.withMemoryRebound(to: SIMD8<Float>.self, capacity: 64) { $0 }
+                    let bSIMD = bPtr.baseAddress!.withMemoryRebound(to: SIMD8<Float>.self, capacity: 64) { $0 }
                     
                     // Copy first 512 elements (vector a)
                     for i in 0..<64 {
@@ -186,10 +185,10 @@ public class NeuralDistanceModel: LearnedDistanceModel {
             // Add bias and apply activation using SIMD
             output.withUnsafeMutableBufferPointer { outputPtr in
                 bias.withUnsafeBufferPointer { biasPtr in
-                    let outputSIMD = outputPtr.baseAddress!.assumingMemoryBound(to: SIMD8<Float>.self)
-                    let biasSIMD = biasPtr.baseAddress!.assumingMemoryBound(to: SIMD8<Float>.self)
-                    
                     let outputChunks = (outputSize + 7) / 8
+                    let outputSIMD = outputPtr.baseAddress!.withMemoryRebound(to: SIMD8<Float>.self, capacity: outputChunks) { $0 }
+                    let biasSIMD = biasPtr.baseAddress!.withMemoryRebound(to: SIMD8<Float>.self, capacity: outputChunks) { $0 }
+                    
                     let isLastLayer = (i == weights.count - 1)
                     
                     for j in 0..<outputChunks {
@@ -200,7 +199,16 @@ public class NeuralDistanceModel: LearnedDistanceModel {
                         if actualSize == 8 {
                             // Full SIMD operation
                             let values = outputSIMD[j] + biasSIMD[j]
-                            outputSIMD[j] = isLastLayer ? values : max(values, SIMD8<Float>.zero)
+                            if isLastLayer {
+                                outputSIMD[j] = values
+                            } else {
+                                // ReLU activation: max(0, x)
+                                var result = SIMD8<Float>()
+                                for k in 0..<8 {
+                                    result[k] = values[k] > 0 ? values[k] : 0
+                                }
+                                outputSIMD[j] = result
+                            }
                         } else {
                             // Handle remaining elements scalar
                             for k in startIdx..<endIdx {
@@ -286,13 +294,22 @@ public class NeuralDistanceModel: LearnedDistanceModel {
                     
                     if actualSize == 8 {
                         let outputPtr = batchOutput.withUnsafeMutableBufferPointer { $0.baseAddress!.advanced(by: rowOffset + i) }
-                        let outputSIMD = outputPtr.assumingMemoryBound(to: SIMD8<Float>.self)
+                        let outputSIMD = outputPtr.withMemoryRebound(to: SIMD8<Float>.self, capacity: 1) { $0 }
                         
                         let biasPtr = bias.withUnsafeBufferPointer { $0.baseAddress!.advanced(by: i) }
-                        let biasSIMD = biasPtr.assumingMemoryBound(to: SIMD8<Float>.self)
+                        let biasSIMD = biasPtr.withMemoryRebound(to: SIMD8<Float>.self, capacity: 1) { $0 }
                         
                         let values = outputSIMD.pointee + biasSIMD.pointee
-                        outputSIMD.pointee = isLastLayer ? values : max(values, SIMD8<Float>.zero)
+                        if isLastLayer {
+                            outputSIMD.pointee = values
+                        } else {
+                            // ReLU activation: max(0, x)
+                            var result = SIMD8<Float>()
+                            for k in 0..<8 {
+                                result[k] = values[k] > 0 ? values[k] : 0
+                            }
+                            outputSIMD.pointee = result
+                        }
                     } else {
                         // Handle remaining elements
                         for j in i..<endIdx {

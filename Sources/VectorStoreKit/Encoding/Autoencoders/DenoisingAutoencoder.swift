@@ -13,7 +13,7 @@ public struct DenoisingAutoencoderConfiguration: AutoencoderConfiguration {
     public let decoderLayers: [Int]
     public let noiseLevel: Float
     public let noiseType: NoiseType
-    public let training: TrainingConfiguration
+    public let training: AutoencoderTrainingConfiguration
     public let regularization: RegularizationConfig
     
     public enum NoiseType: String, Sendable, Codable {
@@ -30,7 +30,7 @@ public struct DenoisingAutoencoderConfiguration: AutoencoderConfiguration {
         decoderLayers: [Int] = [256, 512],
         noiseLevel: Float = 0.3,
         noiseType: NoiseType = .gaussian,
-        training: TrainingConfiguration = TrainingConfiguration(),
+        training: AutoencoderTrainingConfiguration = AutoencoderTrainingConfiguration(),
         regularization: RegularizationConfig = RegularizationConfig()
     ) {
         self.inputDimensions = inputDimensions
@@ -490,7 +490,7 @@ public actor DenoisingAutoencoder: Autoencoder {
     
     private func updateLearningRate(
         optimizer: any Optimizer,
-        schedule: TrainingConfiguration.LearningRateSchedule,
+        schedule: AutoencoderTrainingConfiguration.LearningRateSchedule,
         epoch: Int,
         step: Int
     ) async {

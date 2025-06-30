@@ -326,8 +326,29 @@ extension VectorStoreCLI {
             config: StoreConfig,
             progressTracker: ProgressTracker?
         ) async throws -> ImportResult {
-            // TODO: Implement CSV import
-            throw CLIError.operationFailed("CSV import not yet implemented")
+            // Load store
+            let (_, store) = try await VectorStoreCLI.loadStore(at: global.storePath)
+            
+            // Read CSV data
+            let data = try Data(contentsOf: URL(fileURLWithPath: path))
+            
+            // Import using CSV parser
+            let result = try await store.importCSV(
+                from: data,
+                hasHeader: true
+            )
+            
+            if !global.quiet {
+                Console.success("Imported \(result.vectorsImported) vectors in \(String(format: "%.2f", result.duration))s")
+                Console.info("Average: \(String(format: "%.0f", result.averageVectorsPerSecond)) vectors/second")
+            }
+            
+            return ImportResult(
+                imported: result.vectorsImported,
+                failed: 0,
+                skipped: 0,
+                errors: []
+            )
         }
         
         private func importBinary(
@@ -335,8 +356,21 @@ extension VectorStoreCLI {
             config: StoreConfig,
             progressTracker: ProgressTracker?
         ) async throws -> ImportResult {
-            // TODO: Implement binary import
-            throw CLIError.operationFailed("Binary import not yet implemented")
+            // Load store
+            let (_, store) = try await VectorStoreCLI.loadStore(at: global.storePath)
+            
+            // Read binary data
+            let data = try Data(contentsOf: URL(fileURLWithPath: path))
+            
+            // Import binary data
+            try await store.importBinary(data)
+            
+            return ImportResult(
+                imported: 1, // Binary import is typically a single operation
+                failed: 0,
+                skipped: 0,
+                errors: []
+            )
         }
         
         private func importHDF5(
@@ -344,8 +378,8 @@ extension VectorStoreCLI {
             config: StoreConfig,
             progressTracker: ProgressTracker?
         ) async throws -> ImportResult {
-            // TODO: Implement HDF5 import
-            throw CLIError.operationFailed("HDF5 import not yet implemented")
+            // HDF5 import requires external library
+            throw CLIError.operationFailed("HDF5 import requires external HDF5 library. Consider converting to CSV or JSON format.")
         }
         
         private func processJSONItem(
@@ -373,14 +407,27 @@ extension VectorStoreCLI {
             // Extract metadata
             let metadata = item[metadataField] as? [String: Any] ?? [:]
             
-            // TODO: Actually insert into store
             if dryRun {
                 // Just validate, don't insert
                 return
             }
             
-            // Simulate insertion for now
-            // In real implementation, this would use the VectorStore API
+            // Load store
+            let (_, store) = try await VectorStoreCLI.loadStore(at: global.storePath)
+            
+            // Convert to Float vector
+            let floatVector = vectorArray.map { Float($0) }
+            let vector = Vector(values: floatVector)
+            
+            // Create entry
+            let entry = VectorEntry(
+                id: id,
+                vector: vector,
+                metadata: metadata
+            )
+            
+            // Add to store
+            try await store.add(entry)
         }
         
         private func countLines(in path: String) throws -> Int {

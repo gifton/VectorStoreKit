@@ -68,8 +68,11 @@ extension VectorStoreCLI {
         // MARK: - Statistics Collection
         
         private func collectStatistics(config: StoreConfig) async throws -> StoreStatistics {
-            // TODO: Connect to actual VectorStore
-            // Generate realistic demo statistics
+            // Load actual store
+            let (_, store) = try await VectorStoreCLI.loadStore(at: global.storePath)
+            
+            // Get actual statistics
+            let stats = try await store.getStatistics()
             
             let generalStats = GeneralStatistics(
                 createdAt: config.createdAt,

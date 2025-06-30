@@ -56,7 +56,7 @@ where Vector.Scalar: BinaryFloatingPoint {
         id: VectorID, 
         vector: Vector, 
         metadata: Metadata,
-        tier: StorageTier = .auto
+        tier: StorageTier = .memory
     ) {
         self.id = id
         self.vector = vector
@@ -73,7 +73,7 @@ where Vector.Scalar: BinaryFloatingPoint {
         id: VectorID,
         vector: Vector,
         metadata: Metadata,
-        tier: StorageTier = .auto,
+        tier: StorageTier = .memory,
         quality: VectorQuality
     ) {
         self.id = id
@@ -91,7 +91,7 @@ where Vector.Scalar: BinaryFloatingPoint {
         id: VectorID,
         vector: Vector,
         metadata: Metadata,
-        tier: StorageTier = .auto
+        tier: StorageTier = .memory
     ) async -> VectorEntry {
         let quality = await VectorQuality.assessWithCache(vector)
         return VectorEntry(
@@ -106,6 +106,61 @@ where Vector.Scalar: BinaryFloatingPoint {
     /// Update access pattern for ML-driven optimization
     public mutating func recordAccess(at time: Timestamp = DispatchTime.now().uptimeNanoseconds) {
         accessPattern.recordAccess(at: time)
+    }
+}
+
+// MARK: - VectorEntry Codable Implementation
+
+extension VectorEntry {
+    private enum CodingKeys: String, CodingKey {
+        case id, metadata, timestamp, tier, quality, compressionRatio, accessPattern
+        case vectorData = "vector"
+    }
+    
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(metadata, forKey: .metadata)
+        try container.encode(timestamp, forKey: .timestamp)
+        try container.encode(tier, forKey: .tier)
+        try container.encode(quality, forKey: .quality)
+        try container.encode(compressionRatio, forKey: .compressionRatio)
+        try container.encode(accessPattern, forKey: .accessPattern)
+        
+        // Encode vector as array of scalars
+        var vectorArray: [Vector.Scalar] = []
+        for i in 0..<vector.scalarCount {
+            vectorArray.append(vector[i])
+        }
+        try container.encode(vectorArray, forKey: .vectorData)
+    }
+    
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(VectorID.self, forKey: .id)
+        metadata = try container.decode(Metadata.self, forKey: .metadata)
+        timestamp = try container.decode(Timestamp.self, forKey: .timestamp)
+        tier = try container.decode(StorageTier.self, forKey: .tier)
+        quality = try container.decode(VectorQuality.self, forKey: .quality)
+        compressionRatio = try container.decode(Float.self, forKey: .compressionRatio)
+        accessPattern = try container.decode(AccessPattern.self, forKey: .accessPattern)
+        
+        // Decode vector from array
+        let vectorArray = try container.decode([Vector.Scalar].self, forKey: .vectorData)
+        guard vectorArray.count == Vector.scalarCount else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .vectorData,
+                in: container,
+                debugDescription: "Vector data has incorrect dimension: expected \(Vector.scalarCount), got \(vectorArray.count)"
+            )
+        }
+        
+        // Create vector from array
+        var tempVector = Vector()
+        for i in 0..<Vector.scalarCount {
+            tempVector[i] = vectorArray[i]
+        }
+        vector = tempVector
     }
 }
 
@@ -411,81 +466,6 @@ public struct AccessPatternAnalysis: Codable, Sendable {
     public let recency: Float        // How recently accessed (0-1)
     public let regularity: Float     // How regular the access pattern is (0-1)
     public let burstiness: Float     // How bursty the access pattern is (-1 to 1)
-}
-
-// MARK: - Storage Tier Enumeration
-
-/// Advanced storage tier system with ML-driven assignment
-public enum StorageTier: Int, Codable, Sendable, CaseIterable {
-    case hot = 0        // In-memory, fastest access, ML-optimized
-    case warm = 1       // Memory-mapped, balanced performance
-    case cold = 2       // Disk-based, high capacity, compressed
-    case frozen = 3     // Archive storage, maximum compression
-    case auto = 99      // ML-driven automatic tier assignment
-    
-    /// Performance characteristics for each tier
-    public var characteristics: TierCharacteristics {
-        switch self {
-        case .hot:
-            return TierCharacteristics(
-                latency: .nanoseconds(100),
-                throughput: .high,
-                capacity: .low,
-                compression: .none
-            )
-        case .warm:
-            return TierCharacteristics(
-                latency: .microseconds(10),
-                throughput: .medium,
-                capacity: .medium,
-                compression: .light
-            )
-        case .cold:
-            return TierCharacteristics(
-                latency: .milliseconds(1),
-                throughput: .low,
-                capacity: .high,
-                compression: .aggressive
-            )
-        case .frozen:
-            return TierCharacteristics(
-                latency: .milliseconds(100),
-                throughput: .minimal,
-                capacity: .unlimited,
-                compression: .maximum
-            )
-        case .auto:
-            return TierCharacteristics(
-                latency: .variable,
-                throughput: .adaptive,
-                capacity: .adaptive,
-                compression: .adaptive
-            )
-        }
-    }
-}
-
-/// Performance characteristics for storage tiers
-public struct TierCharacteristics: Sendable {
-    public let latency: LatencyTarget
-    public let throughput: ThroughputLevel
-    public let capacity: CapacityLevel
-    public let compression: CompressionLevel
-}
-
-public enum LatencyTarget: Sendable {
-    case nanoseconds(Int)
-    case microseconds(Int)
-    case milliseconds(Int)
-    case variable
-}
-
-public enum ThroughputLevel: Sendable {
-    case minimal, low, medium, high, adaptive
-}
-
-public enum CapacityLevel: Sendable {
-    case low, medium, high, unlimited, adaptive
 }
 
 // MARK: - Quantization Types

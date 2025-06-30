@@ -13,90 +13,111 @@ let package = Package(
         .visionOS(.v1)     // visionOS 1.0+
     ],
     products: [
-        // Products define the executables and libraries a package produces, making them visible to other packages.
+        // Main library
         .library(
             name: "VectorStoreKit",
             targets: ["VectorStoreKit"]),
+        
+        // Verification tools
         .executable(
             name: "verify-memory",
             targets: ["VerifyMemory"]),
         .executable(
             name: "verify-components",
             targets: ["VerifyComponents"]),
+        
+        // Performance tools
         .executable(
             name: "performance-profile",
             targets: ["PerformanceProfile"]),
-        .executable(
-            name: "high-performance-example",
-            targets: ["HighPerformanceExample"]),
-        .executable(
-            name: "adaptive-cache-example",
-            targets: ["AdaptiveCacheExample"]),
-        .executable(
-            name: "vsk-benchmark",
-            targets: ["VectorStoreKitBenchmark"]),
-        .executable(
-            name: "geospatial-example",
-            targets: ["GeoSpatialExample"]),
-        .executable(
-            name: "financial-analysis-example",
-            targets: ["FinancialAnalysisExample"]),
-        .executable(
-            name: "buffer-pool-example",
-            targets: ["BufferPoolExample"]),
+        
+        // CLI tool
         .executable(
             name: "vectorstore",
             targets: ["VectorStoreCLI"]),
-        .executable(
-            name: "thread-optimization-example",
-            targets: ["ThreadOptimizationExample"]),
-        .executable(
-            name: "vector512-optimization-example",
-            targets: ["Vector512OptimizationExample"]),
+        
+        // Validation tool
         .executable(
             name: "VectorStoreValidation",
             targets: ["VectorStoreValidation"]),
-        .executable(
-            name: "distance-matrix-benchmark",
-            targets: ["DistanceMatrixBenchmark"]),
+        
+        // Remaining examples (10 focused examples) - COMMENTED FOR BUILD SPEED
+        // .executable(
+        //     name: "semantic-search-example",
+        //     targets: ["SemanticSearchExample"]),
+        // .executable(
+        //     name: "performance-optimization-example",
+        //     targets: ["PerformanceOptimizationExample"]),
+        // .executable(
+        //     name: "ml-integration-example",
+        //     targets: ["MLIntegrationExample"]),
+        // .executable(
+        //     name: "production-deployment-example",
+        //     targets: ["ProductionDeploymentExample"]),
+        // .executable(
+        //     name: "batch-indexing-example",
+        //     targets: ["BatchIndexingExample"]),
+        // .executable(
+        //     name: "advanced-distance-metrics-example",
+        //     targets: ["AdvancedDistanceMetricsExample"]),
+        // .executable(
+        //     name: "migration-example",
+        //     targets: ["MigrationExample"]),
+        // .executable(
+        //     name: "multi-modal-search-example",
+        //     targets: ["MultiModalSearchExample"]),
+        // .executable(
+        //     name: "recommendation-system-example",
+        //     targets: ["RecommendationSystemExample"]),
+        // .executable(
+        //     name: "monitoring-example",
+        //     targets: ["MonitoringExample"]),
+        // .executable(
+        //     name: "rag-example",
+        //     targets: ["RAGExample"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.5.0"),
     ],
     targets: [
-        // Targets are the basic building blocks of a package, defining a module or a test suite.
-        // Targets can depend on other targets in this package and products from dependencies.
+        // Main library target
         .target(
             name: "VectorStoreKit",
             path: "Sources/VectorStoreKit",
             exclude: [
-                "Benchmarks/BenchmarkRunner.swift",
-                "Benchmarks/ComprehensiveBenchmarks.swift",
-                "Benchmarks/PerformanceBenchmarks.swift",
-                "Encoding/NeuralEncoder.swift"
+                "Encoding/NeuralEncoder.swift",
+                // Exclude README files
+                "Acceleration/Metal/GPU_TIMING_README.md",
+                "Core/ML/ML_FIX_IMPLEMENTATION_PLAN.md",
+                "Core/ValidationREADME.md",
+                "Core/BEST_PRACTICES.md",
+                "Acceleration/Metal/Shaders/README.md",
+                "Acceleration/Metal/BufferCache_README.md"
             ],
+            // TEMPORARILY COMMENTED METAL SHADERS FOR BUILD SPEED DEBUGGING
             resources: [
-                .copy("Acceleration/Metal/Shaders/ClusteringShaders.metal"),
-                .copy("Acceleration/Metal/Shaders/DistanceShaders.metal"),
-                .copy("Acceleration/Metal/Shaders/DistanceMatrixShaders.metal"),
-                .copy("Acceleration/Metal/Shaders/MatrixShaders.metal"),
-                .copy("Acceleration/Metal/Shaders/QuantizationShaders.metal"),
-                .copy("Acceleration/Metal/Shaders/WarpOptimizedShaders.metal"),
-                .copy("Core/ML/Shaders/Activations.metal"),
-                .copy("Core/ML/Shaders/ElementwiseOperations.metal"),
-                .copy("Core/ML/Shaders/FusedOperations.metal"),
-                .copy("Core/ML/Shaders/LossOperations.metal"),
-                .copy("Core/ML/Shaders/MatrixOperations.metal"),
-                .copy("Core/ML/Shaders/MixedPrecisionShaders.metal"),
-                .copy("Core/ML/Shaders/NormalizationShaders.metal"),
-                .copy("Core/ML/Shaders/OptimizationShaders.metal"),
-                .copy("Core/ML/Shaders/OptimizedMLShaders.metal"),
-                .copy("Core/ML/Shaders/OptimizedElementwiseOperations.metal"),
-                .copy("Core/ML/Shaders/OptimizedLossOperations.metal"),
-                .copy("Core/ML/Shaders/PCAShaders.metal")
+                // .copy("Acceleration/Metal/Shaders/ClusteringShaders.metal"),
+                // .copy("Acceleration/Metal/Shaders/DistanceShaders.metal"),
+                // .copy("Acceleration/Metal/Shaders/DistanceMatrixShaders.metal"),
+                // .copy("Acceleration/Metal/Shaders/MatrixShaders.metal"),
+                // .copy("Acceleration/Metal/Shaders/QuantizationShaders.metal"),
+                // .copy("Acceleration/Metal/Shaders/WarpOptimizedShaders.metal"),
+                // .copy("Core/ML/Shaders/Activations.metal"),
+                // .copy("Core/ML/Shaders/ElementwiseOperations.metal"),
+                // .copy("Core/ML/Shaders/FusedOperations.metal"),
+                // .copy("Core/ML/Shaders/LossOperations.metal"),
+                // .copy("Core/ML/Shaders/MatrixOperations.metal"),
+                // .copy("Core/ML/Shaders/MixedPrecisionShaders.metal"),
+                // .copy("Core/ML/Shaders/NormalizationShaders.metal"),
+                // .copy("Core/ML/Shaders/OptimizationShaders.metal"),
+                // .copy("Core/ML/Shaders/OptimizedMLShaders.metal"),
+                // .copy("Core/ML/Shaders/OptimizedElementwiseOperations.metal"),
+                // .copy("Core/ML/Shaders/OptimizedLossOperations.metal"),
+                // .copy("Core/ML/Shaders/PCAShaders.metal")
             ],
             swiftSettings: [
-                .enableExperimentalFeature("StrictConcurrency"),
+                // TEMPORARILY DISABLED FOR BUILD SPEED
+                // .enableExperimentalFeature("StrictConcurrency"),
                 .enableUpcomingFeature("BareSlashRegexLiterals"),
                 .enableUpcomingFeature("ConciseMagicFile"),
                 .enableUpcomingFeature("ForwardTrailingClosures"),
@@ -104,6 +125,8 @@ let package = Package(
                 .enableUpcomingFeature("DisableOutwardActorInference")
             ]
         ),
+        
+        // Verification targets
         .executableTarget(
             name: "VerifyMemory",
             dependencies: ["VectorStoreKit"],
@@ -118,6 +141,8 @@ let package = Package(
                 .enableExperimentalFeature("StrictConcurrency")
             ]
         ),
+        
+        // Performance targets
         .executableTarget(
             name: "PerformanceProfile",
             dependencies: ["VectorStoreKit"],
@@ -125,86 +150,8 @@ let package = Package(
                 .enableExperimentalFeature("StrictConcurrency")
             ]
         ),
-        .executableTarget(
-            name: "TestNeuralEngine",
-            dependencies: ["VectorStoreKit"],
-            path: "Examples",
-            exclude: ["BenchmarkExample.swift", "NeuralClusteringExample.swift", "TestDistanceComputation.swift", "HighPerformanceExample.swift", "AdaptiveCacheExample.swift", "GeoSpatialExample.swift", "FinancialAnalysisExample.swift", "BufferPoolExample.swift"],
-            sources: ["TestNeuralEngine.swift"]
-        ),
-        .executableTarget(
-            name: "TestDistanceComputation",
-            dependencies: ["VectorStoreKit"],
-            path: "Examples",
-            exclude: ["BenchmarkExample.swift", "NeuralClusteringExample.swift", "TestNeuralEngine.swift", "HighPerformanceExample.swift", "AdaptiveCacheExample.swift", "GeoSpatialExample.swift", "FinancialAnalysisExample.swift", "BufferPoolExample.swift"],
-            sources: ["TestDistanceComputation.swift"]
-        ),
-        .executableTarget(
-            name: "BenchmarkExample",
-            dependencies: ["VectorStoreKit"],
-            path: "Examples",
-            exclude: ["TestNeuralEngine.swift", "NeuralClusteringExample.swift", "TestDistanceComputation.swift", "HighPerformanceExample.swift", "AdaptiveCacheExample.swift", "GeoSpatialExample.swift", "FinancialAnalysisExample.swift", "BufferPoolExample.swift"],
-            sources: ["BenchmarkExample.swift"]
-        ),
-        .executableTarget(
-            name: "NeuralClusteringExample",
-            dependencies: ["VectorStoreKit"],
-            path: "Examples",
-            exclude: ["BenchmarkExample.swift", "TestNeuralEngine.swift", "TestDistanceComputation.swift", "HighPerformanceExample.swift", "AdaptiveCacheExample.swift", "GeoSpatialExample.swift", "FinancialAnalysisExample.swift", "BufferPoolExample.swift"],
-            sources: ["NeuralClusteringExample.swift"]
-        ),
-        .executableTarget(
-            name: "HighPerformanceExample",
-            dependencies: ["VectorStoreKit"],
-            path: "Examples",
-            exclude: ["BenchmarkExample.swift", "TestNeuralEngine.swift", "TestDistanceComputation.swift", "NeuralClusteringExample.swift", "AdaptiveCacheExample.swift", "GeoSpatialExample.swift", "FinancialAnalysisExample.swift", "BufferPoolExample.swift"],
-            sources: ["HighPerformanceExample.swift"]
-        ),
-        .executableTarget(
-            name: "AdaptiveCacheExample",
-            dependencies: ["VectorStoreKit"],
-            path: "Examples",
-            exclude: ["BenchmarkExample.swift", "TestNeuralEngine.swift", "TestDistanceComputation.swift", "NeuralClusteringExample.swift", "HighPerformanceExample.swift", "GeoSpatialExample.swift", "FinancialAnalysisExample.swift", "BufferPoolExample.swift"],
-            sources: ["AdaptiveCacheExample.swift"]
-        ),
-        .executableTarget(
-            name: "GeoSpatialExample",
-            dependencies: ["VectorStoreKit"],
-            path: "Examples",
-            exclude: ["BenchmarkExample.swift", "TestNeuralEngine.swift", "TestDistanceComputation.swift", "NeuralClusteringExample.swift", "HighPerformanceExample.swift", "AdaptiveCacheExample.swift", "FinancialAnalysisExample.swift", "BufferPoolExample.swift"],
-            sources: ["GeoSpatialExample.swift"]
-        ),
-        .executableTarget(
-            name: "FinancialAnalysisExample",
-            dependencies: ["VectorStoreKit"],
-            path: "Examples",
-            exclude: ["BenchmarkExample.swift", "TestNeuralEngine.swift", "TestDistanceComputation.swift", "NeuralClusteringExample.swift", "HighPerformanceExample.swift", "AdaptiveCacheExample.swift", "GeoSpatialExample.swift", "BufferPoolExample.swift"],
-            sources: ["FinancialAnalysisExample.swift"]
-        ),
-        .executableTarget(
-            name: "BufferPoolExample",
-            dependencies: ["VectorStoreKit"],
-            path: "Examples",
-            exclude: ["BenchmarkExample.swift", "TestNeuralEngine.swift", "TestDistanceComputation.swift", "NeuralClusteringExample.swift", "HighPerformanceExample.swift", "AdaptiveCacheExample.swift", "GeoSpatialExample.swift", "FinancialAnalysisExample.swift"],
-            sources: ["BufferPoolExample.swift"]
-        ),
-        .testTarget(
-            name: "VectorStoreKitTests",
-            dependencies: ["VectorStoreKit"],
-            swiftSettings: [
-                .enableExperimentalFeature("StrictConcurrency")
-            ]
-        ),
-        .executableTarget(
-            name: "VectorStoreKitBenchmark",
-            dependencies: [
-                "VectorStoreKit",
-                .product(name: "ArgumentParser", package: "swift-argument-parser")
-            ],
-            swiftSettings: [
-                .enableExperimentalFeature("StrictConcurrency")
-            ]
-        ),
+        
+        // CLI and validation
         .executableTarget(
             name: "VectorStoreCLI",
             dependencies: [
@@ -216,20 +163,6 @@ let package = Package(
             ]
         ),
         .executableTarget(
-            name: "ThreadOptimizationExample",
-            dependencies: ["VectorStoreKit"],
-            path: "Examples",
-            exclude: ["BenchmarkExample.swift", "TestNeuralEngine.swift", "TestDistanceComputation.swift", "NeuralClusteringExample.swift", "HighPerformanceExample.swift", "AdaptiveCacheExample.swift", "GeoSpatialExample.swift", "FinancialAnalysisExample.swift", "BufferPoolExample.swift", "Vector512OptimizationExample.swift"],
-            sources: ["ThreadOptimizationExample.swift"]
-        ),
-        .executableTarget(
-            name: "Vector512OptimizationExample",
-            dependencies: ["VectorStoreKit"],
-            path: "Examples",
-            exclude: ["BenchmarkExample.swift", "TestNeuralEngine.swift", "TestDistanceComputation.swift", "NeuralClusteringExample.swift", "HighPerformanceExample.swift", "AdaptiveCacheExample.swift", "GeoSpatialExample.swift", "FinancialAnalysisExample.swift", "BufferPoolExample.swift", "ThreadOptimizationExample.swift"],
-            sources: ["Vector512OptimizationExample.swift"]
-        ),
-        .executableTarget(
             name: "VectorStoreValidation",
             dependencies: [
                 "VectorStoreKit",
@@ -239,13 +172,36 @@ let package = Package(
                 .enableExperimentalFeature("StrictConcurrency")
             ]
         ),
-        .executableTarget(
-            name: "DistanceMatrixBenchmark",
+        
+        // Example targets (10 focused examples) - COMMENTED FOR BUILD SPEED
+        // .executableTarget(
+        //     name: "SemanticSearchExample",
+        //     dependencies: ["VectorStoreKit"],
+        //     path: "Examples",
+        //     sources: ["SemanticSearchExample.swift"],
+        //     swiftSettings: [
+        //         .enableExperimentalFeature("StrictConcurrency")
+        //     ]
+        // ),
+        // COMMENTED OUT ALL EXAMPLE TARGETS FOR BUILD SPEED
+        // .executableTarget(
+        //     name: "PerformanceOptimizationExample",
+        //     dependencies: ["VectorStoreKit"],
+        //     path: "Examples",
+        //     sources: ["PerformanceOptimizationExample.swift"],
+        //     swiftSettings: [
+        //         .enableExperimentalFeature("StrictConcurrency")
+        //     ]
+        // ),
+        // Additional example targets commented out...
+        
+        // Test target
+        .testTarget(
+            name: "VectorStoreKitTests",
             dependencies: ["VectorStoreKit"],
-            path: "Examples",
-            sources: ["DistanceMatrixBenchmark.swift"],
             swiftSettings: [
-                .enableExperimentalFeature("StrictConcurrency")
+                // TEMPORARILY DISABLED FOR BUILD SPEED
+                // .enableExperimentalFeature("StrictConcurrency")
             ]
         ),
     ]

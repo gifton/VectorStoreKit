@@ -477,6 +477,7 @@ public actor MetalMLPipeline {
     private let shaderLibrary: MLShaderLibrary
     private let operations: MetalMLOperations
     private var bufferCache: [Int: [MetalBuffer]] = [:]
+    public let pipelineManager: MetalPipelineManager
     
     // Memory management
     private let maxCacheSize = 512 * 1024 * 1024 // 512MB
@@ -500,6 +501,10 @@ public actor MetalMLPipeline {
             commandQueue: commandQueue,
             shaderLibrary: shaderLibrary
         )
+        
+        // Create a wrapper for MetalDevice
+        let metalDevice = MetalDevice(device: device)
+        self.pipelineManager = try MetalPipelineManager(device: metalDevice)
         
         // Setup memory pressure monitoring
         Task {

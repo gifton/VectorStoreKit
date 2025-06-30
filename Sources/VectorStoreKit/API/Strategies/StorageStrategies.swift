@@ -4,16 +4,90 @@
 
 import Foundation
 
-// MARK: - Hierarchical Storage Strategies
+// MARK: - Production Storage Strategy (using SimpleStorage)
 
-/// Production-optimized hierarchical storage strategy
-public struct HierarchicalProductionStorageStrategy: StorageStrategy, Sendable {
-    public typealias Config = HierarchicalStorage.Configuration
-    public typealias BackendType = HierarchicalStorage
+/// Production-optimized storage strategy using SimpleStorage
+public struct ProductionStorageStrategy: StorageStrategy, Sendable {
+    public typealias Config = SimpleStorageConfiguration
+    public typealias BackendType = SimpleStorage
     
-    public let identifier = "hierarchical-production"
+    public let identifier = "production"
     public let characteristics = StorageCharacteristics(
-        durability: .standard,
+        durability: .none, // Memory-only
+        consistency: .strong,
+        scalability: .moderate,
+        compression: .adaptive
+    )
+    
+    private let customConfig: Config?
+    
+    public init(configuration: Config? = nil) {
+        self.customConfig = configuration
+    }
+    
+    public func defaultConfiguration() -> Config {
+        return customConfig ?? SimpleStorageConfiguration(
+            memoryLimit: 2_147_483_648, // 2GB
+            initialCapacity: 10000,
+            enableCompression: true,
+            compressionThreshold: 2048,
+            evictionPolicy: .lru,
+            enableMetrics: true
+        )
+    }
+    
+    public func createBackend(configuration: Config) async throws -> SimpleStorage {
+        let config = customConfig ?? defaultConfiguration()
+        return try await SimpleStorage(configuration: config)
+    }
+}
+
+/// Research-optimized storage strategy using SimpleStorage with comprehensive metrics
+public struct ResearchStorageStrategy: StorageStrategy, Sendable {
+    public typealias Config = SimpleStorageConfiguration
+    public typealias BackendType = SimpleStorage
+    
+    public let identifier = "research"
+    public let characteristics = StorageCharacteristics(
+        durability: .none, // Memory-only
+        consistency: .strong,
+        scalability: .moderate,
+        compression: .adaptive
+    )
+    
+    private let customConfig: Config?
+    
+    public init(configuration: Config? = nil) {
+        self.customConfig = configuration
+    }
+    
+    public func defaultConfiguration() -> Config {
+        return customConfig ?? SimpleStorageConfiguration(
+            memoryLimit: 5_368_709_120, // 5GB
+            initialCapacity: 50000,
+            enableCompression: true,
+            compressionThreshold: 1024,
+            evictionPolicy: .lfu, // LFU for research workloads
+            enableMetrics: true
+        )
+    }
+    
+    public func createBackend(configuration: Config) async throws -> SimpleStorage {
+        let config = customConfig ?? defaultConfiguration()
+        return try await SimpleStorage(configuration: config)
+    }
+}
+
+// MARK: - Three-Tier Storage Strategy
+
+/// Production-ready 3-tier storage strategy with automatic migration
+public struct ThreeTierStorageStrategy: StorageStrategy, Sendable {
+    public typealias Config = ThreeTierStorageConfiguration
+    public typealias BackendType = ThreeTierStorage
+    
+    public let identifier = "three-tier"
+    public let characteristics = StorageCharacteristics(
+        durability: .standard, // Persistent SSD and archive tiers
         consistency: .strong,
         scalability: .excellent,
         compression: .adaptive
@@ -26,44 +100,27 @@ public struct HierarchicalProductionStorageStrategy: StorageStrategy, Sendable {
     }
     
     public func defaultConfiguration() -> Config {
-        return customConfig ?? Config(
-            hotTierMemoryLimit: 256 * 1024 * 1024,      // 256 MB
-            warmTierFileSizeLimit: 1024 * 1024 * 1024,  // 1 GB
-            coldTierCompression: .lz4,
-            encryptionSettings: .aes256,
-            migrationSettings: .automatic,
-            walConfiguration: .default,
-            monitoringSettings: .enabled,
-            baseDirectory: FileManager.default.temporaryDirectory.appendingPathComponent("vectorstore/production")
-        )
+        return customConfig ?? ThreeTierStorageConfiguration.default
     }
     
-    public func createBackend(configuration: Config) async throws -> HierarchicalStorage {
-        let config = customConfig ?? Config(
-            hotTierMemoryLimit: 256 * 1024 * 1024,      // 256 MB
-            warmTierFileSizeLimit: 1024 * 1024 * 1024,  // 1 GB
-            coldTierCompression: .lz4,
-            encryptionSettings: .aes256,
-            migrationSettings: .automatic,
-            walConfiguration: .default,
-            monitoringSettings: .enabled,
-            baseDirectory: FileManager.default.temporaryDirectory.appendingPathComponent("vectorstore/production")
-        )
-        
-        return try await HierarchicalStorage(configuration: config)
+    public func createBackend(configuration: Config) async throws -> ThreeTierStorage {
+        let config = customConfig ?? configuration
+        return try await ThreeTierStorage(configuration: config)
     }
 }
 
-/// Research-optimized hierarchical storage strategy with comprehensive logging
-public struct HierarchicalResearchStorageStrategy: StorageStrategy, Sendable {
-    public typealias Config = HierarchicalStorage.Configuration
-    public typealias BackendType = HierarchicalStorage
+// MARK: - Simple Storage Strategy
+
+/// Simple memory-only storage strategy using dictionary backend
+public struct SimpleStorageStrategy: StorageStrategy, Sendable {
+    public typealias Config = SimpleStorageConfiguration
+    public typealias BackendType = SimpleStorage
     
-    public let identifier = "hierarchical-research"
+    public let identifier = "simple-memory"
     public let characteristics = StorageCharacteristics(
-        durability: .strict,
-        consistency: .strict,
-        scalability: .excellent,
+        durability: .none,
+        consistency: .strong,
+        scalability: .moderate,
         compression: .adaptive
     )
     
@@ -73,36 +130,13 @@ public struct HierarchicalResearchStorageStrategy: StorageStrategy, Sendable {
         self.customConfig = configuration
     }
     
-    public init(customConfig: HierarchicalStorage.Configuration?) {
-        self.customConfig = customConfig
-    }
-    
     public func defaultConfiguration() -> Config {
-        return customConfig ?? Config(
-            hotTierMemoryLimit: 512 * 1024 * 1024,      // 512 MB
-            warmTierFileSizeLimit: 2048 * 1024 * 1024,  // 2 GB
-            coldTierCompression: .zstd,
-            encryptionSettings: .chacha20,
-            migrationSettings: .intelligent,
-            walConfiguration: .highPerformance,
-            monitoringSettings: .comprehensive,
-            baseDirectory: FileManager.default.temporaryDirectory.appendingPathComponent("vectorstore/research")
-        )
+        return customConfig ?? SimpleStorageConfiguration.default
     }
     
-    public func createBackend(configuration: Config) async throws -> HierarchicalStorage {
-        let config = customConfig ?? Config(
-            hotTierMemoryLimit: 512 * 1024 * 1024,      // 512 MB
-            warmTierFileSizeLimit: 2048 * 1024 * 1024,  // 2 GB
-            coldTierCompression: .zstd,
-            encryptionSettings: .chacha20,
-            migrationSettings: .intelligent,
-            walConfiguration: .highPerformance,
-            monitoringSettings: .comprehensive,
-            baseDirectory: FileManager.default.temporaryDirectory.appendingPathComponent("vectorstore/research")
-        )
-        
-        return try await HierarchicalStorage(configuration: config)
+    public func createBackend(configuration: Config) async throws -> SimpleStorage {
+        let config = customConfig ?? configuration
+        return try await SimpleStorage(configuration: config)
     }
 }
 

@@ -314,7 +314,7 @@ public actor BatchProcessor: BatchSizeManager, MemoryPressureAware {
                             id: id,
                             vector: vec512,
                             metadata: metadata ?? Data(),
-                            tier: .hot
+                            tier: .memory
                         )
                         // Note: Actual insertion would happen here if index supported it
                         results.append(BatchResult(
@@ -730,8 +730,8 @@ public actor BatchProcessor: BatchSizeManager, MemoryPressureAware {
         logger.info("Committing indexing transaction: \(transactionId)")
         
         // Trigger index optimization if needed
-        if let count = await index.count,
-           count > 0 && count % 10000 == 0 {
+        let count = await index.count
+        if count > 0 && count % 10000 == 0 {
             Task {
                 try? await index.optimize(strategy: .light)
             }

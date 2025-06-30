@@ -152,6 +152,19 @@ extension VectorStoreCLI {
         
         // MARK: - Query Parsing
         
+        private func parseStrategy(_ strategy: String) -> SearchStrategy {
+            switch strategy.lowercased() {
+            case "exact":
+                return .exact
+            case "approximate":
+                return .approximate
+            case "adaptive":
+                return .adaptive
+            default:
+                return .adaptive
+            }
+        }
+        
         private func parseQueries(config: StoreConfig) throws -> [QueryVector] {
             if let file = file {
                 return try [parseQueryFromFile(file, config: config)]
@@ -263,21 +276,36 @@ extension VectorStoreCLI {
                 Console.info("Executing query with k=\(k), strategy=\(strategy)...")
             }
             
-            // TODO: Replace with actual VectorStore query
-            // Simulate query execution
-            await Task.sleep(100_000_000) // 0.1s
+            // Load store
+            let (_, store) = try await VectorStoreCLI.loadStore(at: global.storePath)
             
-            let results = (0..<min(k, 100)).map { i in
+            // Convert query vector to Float
+            let floatVector = query.vector.map { Float($0) }
+            let queryVector = Vector(values: floatVector)
+            
+            // Execute search
+            let searchOptions = SearchOptions(
+                k: k,
+                strategy: parseStrategy(strategy),
+                filter: filter.map { SearchFilter(expression: $0) },
+                includeVectors: includeVectors,
+                timeout: timeout
+            )
+            
+            let searchResults = try await store.search(
+                query: queryVector,
+                options: searchOptions
+            )
+            
+            // Convert results to SearchMatch
+            let results = searchResults.map { result in
                 SearchMatch(
-                    id: "vec_\(i)",
-                    distance: Float.random(in: 0...1),
-                    vector: includeVectors ? Array(repeating: 0.0, count: config.dimensions) : nil,
-                    metadata: [
-                        "title": "Document \(i)",
-                        "score": Float.random(in: 0...1)
-                    ]
+                    id: result.id,
+                    distance: result.score,
+                    vector: includeVectors ? result.vector.values.map { Double($0) } : nil,
+                    metadata: result.metadata
                 )
-            }.sorted { $0.distance < $1.distance }
+            }
             
             let duration = Date().timeIntervalSince(startTime)
             

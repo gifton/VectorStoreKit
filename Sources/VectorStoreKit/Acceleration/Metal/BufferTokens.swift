@@ -224,9 +224,17 @@ public actor GeneralBufferPool: Sendable {
         let sizeDistribution = buffersBySize.mapValues { $0.count }
         
         return BufferPoolStatistics(
-            totalBuffers: totalBuffers,
-            memoryUsage: totalMemory,
-            sizeDistribution: sizeDistribution
+            poolName: "TokenBufferPool",
+            totalAllocations: 0, // Would need to track this
+            currentAllocations: totalBuffers,
+            peakAllocations: totalBuffers, // Would need to track this
+            totalBytesAllocated: totalMemory,
+            currentBytesAllocated: totalMemory,
+            peakBytesAllocated: totalMemory, // Would need to track this
+            reuseCount: 0, // Would need to track this
+            hitRate: 0.0, // Would need to track this
+            averageAllocationSize: totalBuffers > 0 ? totalMemory / totalBuffers : 0,
+            fragmentationRatio: 0.0 // Would need to calculate this
         )
     }
     

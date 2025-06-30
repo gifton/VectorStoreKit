@@ -33,10 +33,21 @@ public actor MetalBufferPool {
     
     /// Get statistics about buffer pool usage
     public func getStatistics() -> BufferPoolStatistics {
+        let reuseCount = sizeDistribution.values.reduce(0, +)
+        let hitRate = totalBuffers > 0 ? Float(reuseCount) / Float(totalBuffers) : 0.0
+        
         return BufferPoolStatistics(
-            totalBuffers: totalBuffers,
-            memoryUsage: memoryUsage,
-            sizeDistribution: sizeDistribution
+            poolName: "MetalBufferPool",
+            totalAllocations: totalBuffers,
+            currentAllocations: inUseBuffers.count,
+            peakAllocations: totalBuffers,
+            totalBytesAllocated: memoryUsage,
+            currentBytesAllocated: memoryUsage,
+            peakBytesAllocated: memoryUsage,
+            reuseCount: reuseCount,
+            hitRate: hitRate,
+            averageAllocationSize: totalBuffers > 0 ? memoryUsage / totalBuffers : 0,
+            fragmentationRatio: 0.0
         )
     }
     

@@ -178,7 +178,7 @@ public struct Vector512: SIMD, Sendable, Hashable, Codable {
         
         // Combine accumulators
         let finalSum = sum0 + sum1 + sum2 + sum3
-        return finalSum.sum()
+        return finalSum.x + finalSum.y + finalSum.z + finalSum.w
     }
     
     /// Euclidean distance squared with multiple accumulators
@@ -236,7 +236,7 @@ public struct Vector512: SIMD, Sendable, Hashable, Codable {
         
         // Combine accumulators
         let finalSum = sum0 + sum1 + sum2 + sum3
-        return finalSum.sum()
+        return finalSum.x + finalSum.y + finalSum.z + finalSum.w
     }
     
     /// Cosine similarity (assumes normalized vectors)

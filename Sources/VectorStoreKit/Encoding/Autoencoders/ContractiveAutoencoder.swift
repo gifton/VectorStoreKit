@@ -13,7 +13,7 @@ public struct ContractiveAutoencoderConfiguration: AutoencoderConfiguration {
     public let encoderLayers: [Int]
     public let decoderLayers: [Int]
     public let contractiveWeight: Float
-    public let training: TrainingConfiguration
+    public let training: AutoencoderTrainingConfiguration
     public let regularization: RegularizationConfig
     
     public init(
@@ -22,7 +22,7 @@ public struct ContractiveAutoencoderConfiguration: AutoencoderConfiguration {
         encoderLayers: [Int] = [512, 256],
         decoderLayers: [Int] = [256, 512],
         contractiveWeight: Float = 0.1,
-        training: TrainingConfiguration = TrainingConfiguration(),
+        training: AutoencoderTrainingConfiguration = AutoencoderTrainingConfiguration(),
         regularization: RegularizationConfig = RegularizationConfig()
     ) {
         self.inputDimensions = inputDimensions
@@ -459,7 +459,7 @@ public actor ContractiveAutoencoder: Autoencoder {
     
     private func updateLearningRate(
         optimizer: any Optimizer,
-        schedule: TrainingConfiguration.LearningRateSchedule,
+        schedule: AutoencoderTrainingConfiguration.LearningRateSchedule,
         epoch: Int,
         step: Int
     ) async {

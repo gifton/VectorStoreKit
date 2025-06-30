@@ -129,17 +129,25 @@ public actor MetalMLBufferPool {
     /// Get pool statistics
     public func getStatistics() -> BufferPoolStatistics {
         var totalBuffers = 0
-        var sizeDistribution: [Int: Int] = [:]
+        var totalAllocations = 0
         
         for (size, buffers) in pools {
             totalBuffers += buffers.count
-            sizeDistribution[size] = buffers.count
+            totalAllocations += buffers.count
         }
         
         return BufferPoolStatistics(
-            totalBuffers: totalBuffers,
-            memoryUsage: currentMemoryUsage,
-            sizeDistribution: sizeDistribution
+            poolName: "MetalMLBufferPool",
+            totalAllocations: totalAllocations,
+            currentAllocations: totalBuffers,
+            peakAllocations: totalAllocations,
+            totalBytesAllocated: currentMemoryUsage,
+            currentBytesAllocated: currentMemoryUsage,
+            peakBytesAllocated: maxMemory,
+            reuseCount: 0,
+            hitRate: 0.0,
+            averageAllocationSize: totalBuffers > 0 ? currentMemoryUsage / totalBuffers : 0,
+            fragmentationRatio: 0.0
         )
     }
     
@@ -194,19 +202,6 @@ public actor MetalMLBufferPool {
     }
 }
 
-/// Statistics about the buffer pool
-/// 
-/// Thread-safe statistics snapshot.
-/// All properties are immutable value types.
-public struct BufferPoolStatistics: Sendable {
-    public let totalBuffers: Int
-    public let memoryUsage: Int
-    public let sizeDistribution: [Int: Int]
-    
-    public var memoryUsageMB: Double {
-        Double(memoryUsage) / 1_048_576
-    }
-}
 
 // MARK: - Global Buffer Pool
 

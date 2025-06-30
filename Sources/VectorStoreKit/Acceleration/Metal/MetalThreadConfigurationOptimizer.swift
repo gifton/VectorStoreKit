@@ -176,7 +176,7 @@ public actor MetalThreadConfigurationOptimizer {
     // MARK: - Private Methods
     
     private func calculateOptimalConfiguration(
-        operation: OperationType,
+        operation: ThreadOperationType,
         workSize: Int,
         vectorDimension: Int?,
         sharedMemoryPerThread: Int
@@ -383,7 +383,7 @@ public actor MetalThreadConfigurationOptimizer {
 // MARK: - Supporting Types
 
 /// Operation types for thread configuration
-public enum OperationType: String, CaseIterable {
+public enum ThreadOperationType: String, CaseIterable {
     case distanceComputation = "distance"
     case matrixMultiplication = "matrix"
     case quantization = "quantization"
@@ -413,7 +413,7 @@ public struct Optimal2DConfiguration: Sendable {
 
 /// Configuration cache key
 private struct ConfigurationKey: Hashable {
-    let operation: OperationType
+    let operation: ThreadOperationType
     let workSize: Int
     let vectorDimension: Int
     let sharedMemoryPerThread: Int

@@ -39,7 +39,8 @@ public actor MetalDistanceMatrix {
         self.bufferPool = bufferPool
         self.pipelineManager = pipelineManager
         self.profiler = profiler
-        self.commandBufferPool = commandBufferPool ?? MetalCommandBufferPool(device: device.device, profiler: profiler)
+        let mtlDevice = device.device
+        self.commandBufferPool = commandBufferPool ?? MetalCommandBufferPool(device: mtlDevice, profiler: profiler)
     }
     
     // MARK: - Public API
@@ -354,13 +355,18 @@ public actor MetalDistanceMatrix {
                         let distance: Float
                         switch metric {
                         case .euclidean:
-                            distance = DistanceComputation512.euclideanDistance(vectorsA[i], vectorsB[j])
+                            distance = sqrt(vectorsA[i].distanceSquared(to: vectorsB[j]))
                         case .cosine:
-                            distance = DistanceComputation512.cosineDistance(vectorsA[i], vectorsB[j])
+                            distance = 1.0 - vectorsA[i].cosineSimilarity(to: vectorsB[j])
                         case .manhattan:
-                            distance = DistanceComputation512.manhattanDistance(vectorsA[i], vectorsB[j])
+                            // Manhattan distance implementation
+                            var sum: Float = 0
+                            for k in 0..<512 {
+                                sum += abs(vectorsA[i][k] - vectorsB[j][k])
+                            }
+                            distance = sum
                         default:
-                            distance = DistanceComputation512.euclideanDistance(vectorsA[i], vectorsB[j])
+                            distance = sqrt(vectorsA[i].distanceSquared(to: vectorsB[j]))
                         }
                         return (i, j, distance)
                     }

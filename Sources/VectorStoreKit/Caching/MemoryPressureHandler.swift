@@ -84,8 +84,10 @@ public actor MemoryPressureHandler {
     // MARK: - Initialization
     
     public init() {
-        setupPlatformMonitoring()
-        startMonitoring()
+        Task {
+            await setupPlatformMonitoring()
+            await startMonitoring()
+        }
     }
     
     deinit {

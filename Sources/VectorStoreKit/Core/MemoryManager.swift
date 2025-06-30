@@ -166,7 +166,7 @@ public actor MemoryManager {
         stats.pressureEventCount += 1
         let startTime = Date()
         
-        logger.warning("Handling memory pressure: \(pressureLevel.rawValue)")
+        logger.warning("Handling memory pressure: \(String(describing: pressureLevel))")
         
         switch pressureLevel {
         case .normal:
@@ -199,9 +199,9 @@ public actor MemoryManager {
             for pool in bufferPools {
                 group.addTask {
                     let poolStats = await pool.getStatistics()
-                    if poolStats.totalBuffers > 10 {
+                    if poolStats.currentAllocations > 10 {
                         await pool.clearAll()
-                        return poolStats.totalBuffers
+                        return poolStats.currentAllocations
                     }
                     return 0
                 }
@@ -264,7 +264,7 @@ public actor MemoryManager {
                 group.addTask {
                     let poolStats = await pool.getStatistics()
                     await pool.clearAll()
-                    return poolStats.totalBuffers
+                    return poolStats.currentAllocations
                 }
             }
             
@@ -432,13 +432,6 @@ public actor MemoryManager {
 }
 
 // MARK: - Supporting Types
-
-/// System memory pressure levels
-public enum SystemMemoryPressure: String, Sendable {
-    case normal
-    case warning
-    case critical
-}
 
 /// Manual cleanup levels
 public enum CleanupLevel: String, Sendable {

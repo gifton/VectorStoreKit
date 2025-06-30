@@ -787,7 +787,7 @@ public extension Result where Failure == VectorStoreError {
     static func failure(
         _ error: VectorStoreError
     ) -> Result<Success, VectorStoreError> {
-        .failure(error)
+        Result<Success, VectorStoreError>.failure(error)
     }
     
     /// Map any error to VectorStoreError

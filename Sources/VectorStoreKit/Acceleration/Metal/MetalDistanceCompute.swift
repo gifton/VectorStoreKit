@@ -33,7 +33,8 @@ public actor MetalDistanceCompute {
         self.bufferPool = bufferPool
         self.pipelineManager = pipelineManager
         self.profiler = profiler
-        self.commandBufferPool = commandBufferPool ?? MetalCommandBufferPool(device: device.device, profiler: profiler)
+        let mtlDevice = device.device
+        self.commandBufferPool = commandBufferPool ?? MetalCommandBufferPool(device: mtlDevice, profiler: profiler)
     }
     
     // MARK: - Distance Computation

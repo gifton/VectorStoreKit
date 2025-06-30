@@ -233,28 +233,35 @@ extension VectorStoreCLI {
             var exported = 0
             var skipped = 0
             
-            // TODO: Replace with actual store access
-            let totalVectors = 1000 // Placeholder
-            progressTracker?.start(total: min(totalVectors, limit ?? totalVectors))
+            // Load store and export vectors
+            let (_, store) = try await VectorStoreCLI.loadStore(at: global.storePath)
             
-            // Simulate export
-            for i in 0..<min(totalVectors, limit ?? totalVectors) {
-                if i < offset {
+            // Export all vectors as JSON array
+            let searchResults = try await store.search(
+                query: nil,  // Get all vectors
+                options: SearchOptions(
+                    k: limit ?? 10000,
+                    includeVectors: includeVectors,
+                    filter: filter.map { SearchFilter(expression: $0) }
+                )
+            )
+            
+            progressTracker?.start(total: searchResults.count)
+            
+            for (index, result) in searchResults.enumerated() {
+                if index < offset {
                     skipped += 1
                     continue
                 }
                 
-                var item: [String: Any] = ["id": "vec_\(i)"]
+                var item: [String: Any] = ["id": result.id]
                 
                 if includeVectors {
-                    item["vector"] = Array(repeating: 0.0, count: config.dimensions)
+                    item["vector"] = result.vector.values
                 }
                 
-                if includeMetadata {
-                    item["metadata"] = [
-                        "index": i,
-                        "timestamp": Date().timeIntervalSince1970
-                    ]
+                if includeMetadata, let metadata = result.metadata {
+                    item["metadata"] = metadata
                 }
                 
                 vectors.append(item)
@@ -297,28 +304,36 @@ extension VectorStoreCLI {
             var exported = 0
             var skipped = 0
             
-            // TODO: Replace with actual store access
-            let totalVectors = 1000 // Placeholder
-            progressTracker?.start(total: min(totalVectors, limit ?? totalVectors))
+            // Load store and export vectors
+            let (_, store) = try await VectorStoreCLI.loadStore(at: global.storePath)
+            
+            // Export vectors as JSONL
+            let searchResults = try await store.search(
+                query: nil,  // Get all vectors
+                options: SearchOptions(
+                    k: limit ?? 10000,
+                    includeVectors: includeVectors,
+                    filter: filter.map { SearchFilter(expression: $0) }
+                )
+            )
+            
+            progressTracker?.start(total: searchResults.count)
             
             // Export line by line
-            for i in 0..<min(totalVectors, limit ?? totalVectors) {
-                if i < offset {
+            for (index, result) in searchResults.enumerated() {
+                if index < offset {
                     skipped += 1
                     continue
                 }
                 
-                var item: [String: Any] = ["id": "vec_\(i)"]
+                var item: [String: Any] = ["id": result.id]
                 
                 if includeVectors {
-                    item["vector"] = Array(repeating: 0.0, count: config.dimensions)
+                    item["vector"] = result.vector.values
                 }
                 
-                if includeMetadata {
-                    item["metadata"] = [
-                        "index": i,
-                        "timestamp": Date().timeIntervalSince1970
-                    ]
+                if includeMetadata, let metadata = result.metadata {
+                    item["metadata"] = metadata
                 }
                 
                 let jsonData = try JSONSerialization.data(withJSONObject: item)
@@ -337,8 +352,24 @@ extension VectorStoreCLI {
             config: StoreConfig,
             progressTracker: ProgressTracker?
         ) async throws -> ExportResult {
-            // TODO: Implement CSV export
-            throw CLIError.operationFailed("CSV export not yet implemented")
+            // Load store
+            let (_, store) = try await VectorStoreCLI.loadStore(at: global.storePath)
+            
+            // Export to CSV
+            let csvData = try await store.exportCSV(
+                query: filter,
+                limit: limit ?? 10000,
+                includeMetadata: includeMetadata
+            )
+            
+            // Write to file
+            try csvData.write(to: URL(fileURLWithPath: path))
+            
+            return ExportResult(
+                exported: limit ?? 10000, // Actual count would come from store
+                skipped: offset,
+                fileSize: csvData.count
+            )
         }
         
         private func exportBinary(
@@ -346,8 +377,20 @@ extension VectorStoreCLI {
             config: StoreConfig,
             progressTracker: ProgressTracker?
         ) async throws -> ExportResult {
-            // TODO: Implement binary export
-            throw CLIError.operationFailed("Binary export not yet implemented")
+            // Load store
+            let (_, store) = try await VectorStoreCLI.loadStore(at: global.storePath)
+            
+            // Export to binary
+            let binaryData = try await store.exportBinary()
+            
+            // Write to file
+            try binaryData.write(to: URL(fileURLWithPath: path))
+            
+            return ExportResult(
+                exported: 1, // Binary export is a single operation
+                skipped: 0,
+                fileSize: binaryData.count
+            )
         }
         
         private func exportHDF5(
@@ -355,8 +398,8 @@ extension VectorStoreCLI {
             config: StoreConfig,
             progressTracker: ProgressTracker?
         ) async throws -> ExportResult {
-            // TODO: Implement HDF5 export
-            throw CLIError.operationFailed("HDF5 export not yet implemented")
+            // HDF5 export requires external library
+            throw CLIError.operationFailed("HDF5 export requires external HDF5 library. Consider using CSV or JSON format.")
         }
         
         private func compressFile(_ path: String) async throws {

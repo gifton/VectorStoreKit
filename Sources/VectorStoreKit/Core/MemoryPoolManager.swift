@@ -165,21 +165,10 @@ public actor EnhancedBufferPool: MemoryPool, MemoryManagedBufferPool {
             await handleMemoryPressure(.warning)
         }
         
-        guard let pointer = UnsafeMutableRawPointer.allocate(
+        let pointer = UnsafeMutableRawPointer.allocate(
             byteCount: alignedSize,
             alignment: actualAlignment
-        ) else {
-            throw VectorStoreError(
-                category: .memoryAllocation,
-                code: .allocationFailed,
-                message: "Failed to allocate buffer of size \(alignedSize)",
-                context: [
-                    "size": alignedSize,
-                    "reason": "Failed to allocate buffer",
-                    "availableMemory": totalBytesAllocated - currentBytesInUse
-                ]
-            )
-        }
+        )
         
         // Track allocation
         let info = AllocationInfo(
@@ -258,10 +247,10 @@ public actor EnhancedBufferPool: MemoryPool, MemoryManagedBufferPool {
         
         for size in topSizes {
             for _ in 0..<perSize {
-                guard let pointer = UnsafeMutableRawPointer.allocate(
+                let pointer = UnsafeMutableRawPointer.allocate(
                     byteCount: size,
                     alignment: defaultAlignment
-                ) else { continue }
+                )
                 
                 let entry = BufferEntry(
                     pointer: pointer,
@@ -372,9 +361,17 @@ public actor EnhancedBufferPool: MemoryPool, MemoryManagedBufferPool {
         }
         
         return BufferPoolStatistics(
-            totalBuffers: poolCount + allocatedBuffers.count,
-            memoryUsage: currentBytesInUse,
-            sizeDistribution: sizeDistribution
+            poolName: "EnhancedBufferPool",
+            totalAllocations: allocationCount,
+            currentAllocations: allocatedBuffers.count,
+            peakAllocations: Int(peakBytesUsage / 4096), // Approximate
+            totalBytesAllocated: totalBytesAllocated,
+            currentBytesAllocated: currentBytesInUse,
+            peakBytesAllocated: peakBytesUsage,
+            reuseCount: hitCount,
+            hitRate: Float(hitCount) / Float(max(1, hitCount + missCount)),
+            averageAllocationSize: allocationCount > 0 ? totalBytesAllocated / allocationCount : 0,
+            fragmentationRatio: Float(await calculateFragmentation())
         )
     }
     
@@ -393,7 +390,7 @@ public actor EnhancedBufferPool: MemoryPool, MemoryManagedBufferPool {
     }
     
     private func handleMemoryPressure(_ level: SystemMemoryPressure) async {
-        logger.warning("Handling memory pressure: \(level.rawValue)")
+        logger.warning("Handling memory pressure: \(String(describing: level))")
         
         switch level {
         case .normal:
@@ -443,10 +440,10 @@ public actor EnhancedBufferPool: MemoryPool, MemoryManagedBufferPool {
                 let toAdd = targetSize - currentPoolSize
                 
                 for _ in 0..<toAdd {
-                    guard let pointer = UnsafeMutableRawPointer.allocate(
+                    let pointer = UnsafeMutableRawPointer.allocate(
                         byteCount: size,
                         alignment: defaultAlignment
-                    ) else { break }
+                    )
                     
                     let entry = BufferEntry(
                         pointer: pointer,
@@ -645,7 +642,7 @@ public actor MemoryPoolManager {
     
     /// Handle system memory pressure
     public func handleMemoryPressure(_ level: SystemMemoryPressure) async {
-        logger.warning("Handling memory pressure: \(level.rawValue)")
+        logger.warning("Handling memory pressure: \(String(describing: level))")
         
         switch level {
         case .normal:

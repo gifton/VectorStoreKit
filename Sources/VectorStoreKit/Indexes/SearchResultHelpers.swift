@@ -64,7 +64,7 @@ public func createSimpleSearchResult<Metadata: Codable & Sendable>(
         id: id,
         distance: distance,
         metadata: metadata,
-        tier: .hot,
+        tier: .memory,
         similarityAnalysis: similarityAnalysis,
         provenance: provenance,
         confidence: max(0, min(1, 1.0 - (distance / 10.0)))

@@ -13,7 +13,7 @@ public struct SparseAutoencoderConfiguration: AutoencoderConfiguration {
     public let decoderLayers: [Int]
     public let sparsityTarget: Float
     public let sparsityWeight: Float
-    public let training: TrainingConfiguration
+    public let training: AutoencoderTrainingConfiguration
     public let regularization: RegularizationConfig
     
     public init(
@@ -23,7 +23,7 @@ public struct SparseAutoencoderConfiguration: AutoencoderConfiguration {
         decoderLayers: [Int] = [256, 512],
         sparsityTarget: Float = 0.05,
         sparsityWeight: Float = 1.0,
-        training: TrainingConfiguration = TrainingConfiguration(),
+        training: AutoencoderTrainingConfiguration = AutoencoderTrainingConfiguration(),
         regularization: RegularizationConfig = RegularizationConfig()
     ) {
         self.inputDimensions = inputDimensions
@@ -480,7 +480,7 @@ public actor SparseAutoencoder: Autoencoder {
     
     private func updateLearningRate(
         optimizer: any Optimizer,
-        schedule: TrainingConfiguration.LearningRateSchedule,
+        schedule: AutoencoderTrainingConfiguration.LearningRateSchedule,
         epoch: Int,
         step: Int
     ) async {

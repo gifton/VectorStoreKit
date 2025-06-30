@@ -214,18 +214,23 @@ extension VectorStoreCLI {
             // Execute query
             print("Searching for \(k) nearest neighbors...")
             
-            // TODO: Execute actual query
-            await Task.sleep(100_000_000) // 0.1s simulation
+            // Execute actual query
+            let (_, store) = try await VectorStoreCLI.loadStore(at: context.storePath)
+            let floatVector = vector.map { Float($0) }
+            let queryVector = Vector(values: floatVector)
+            
+            let results = try await store.search(
+                query: queryVector,
+                k: k
+            )
             
             // Display results
             print("\nResults:")
             print(String(format: "%-4s %-20s %-10s", "Rank", "ID", "Distance"))
             print(String(repeating: "-", count: 40))
             
-            for i in 1...min(k, 5) {
-                let id = "vec_\(Int.random(in: 1000...9999))"
-                let distance = Float.random(in: 0.1...0.9)
-                print(String(format: "%-4d %-20s %-10.4f", i, id, distance))
+            for (i, result) in results.enumerated() {
+                print(String(format: "%-4d %-20s %-10.4f", i + 1, result.id, result.score))
             }
         }
         
@@ -246,9 +251,16 @@ extension VectorStoreCLI {
             
             print("Inserting vector '\(id)'...")
             
-            // TODO: Execute actual insert
-            await Task.sleep(50_000_000) // 0.05s simulation
+            // Execute actual insert
+            let (_, store) = try await VectorStoreCLI.loadStore(at: context.storePath)
+            let floatVector = vector.map { Float($0) }
+            let entry = VectorEntry(
+                id: id,
+                vector: Vector(values: floatVector),
+                metadata: metadata
+            )
             
+            try await store.add(entry)
             Console.success("Vector inserted successfully")
             if let metadata = metadata {
                 print("Metadata: \(metadata)")
@@ -263,17 +275,25 @@ extension VectorStoreCLI {
             let id = args[0]
             print("Retrieving vector '\(id)'...")
             
-            // TODO: Execute actual get
-            await Task.sleep(50_000_000) // 0.05s simulation
+            // Execute actual get
+            let (_, store) = try await VectorStoreCLI.loadStore(at: context.storePath)
             
-            // Simulate result
-            let exists = Float.random(in: 0...1) > 0.3
-            
-            if exists {
-                print("\nVector: \(id)")
-                print("Dimensions: \(context.config.dimensions)")
-                print("Values: [0.123, 0.456, 0.789, ...]")
-                print("Metadata: {\"created\": \"2024-01-01\", \"type\": \"example\"}")
+            if let result = try await store.get(id: id) {
+                print("\nVector: \(result.id)")
+                print("Dimensions: \(result.vector.count)")
+                let vectorPreview = result.vector.values.prefix(5)
+                    .map { String(format: "%.3f", $0) }
+                    .joined(separator: ", ")
+                print("Values: [\(vectorPreview), ...]")
+                
+                if let metadata = result.metadata {
+                    let encoder = JSONEncoder()
+                    encoder.outputFormatting = .prettyPrinted
+                    if let data = try? encoder.encode(metadata),
+                       let json = String(data: data, encoding: .utf8) {
+                        print("Metadata: \(json)")
+                    }
+                }
             } else {
                 Console.warning("Vector '\(id)' not found")
             }
@@ -297,24 +317,32 @@ extension VectorStoreCLI {
             
             print("Deleting vector '\(id)'...")
             
-            // TODO: Execute actual delete
-            await Task.sleep(50_000_000) // 0.05s simulation
+            // Execute actual delete
+            let (_, store) = try await VectorStoreCLI.loadStore(at: context.storePath)
             
+            try await store.delete(id: id)
             Console.success("Vector deleted successfully")
         }
         
         private func executeStats(context: ShellContext) async throws {
             print("Gathering statistics...")
             
-            // TODO: Get actual stats
-            await Task.sleep(100_000_000) // 0.1s simulation
+            // Get actual stats
+            let (_, store) = try await VectorStoreCLI.loadStore(at: context.storePath)
+            let stats = try await store.getStatistics()
             
             print("\nVector Store Statistics:")
-            print("  Vectors:      50,000")
-            print("  Index Size:   104.9 MB")
-            print("  Memory Usage: 256 MB")
-            print("  Cache Size:   1,000 entries")
-            print("  Uptime:       2d 14h 32m")
+            print("  Vectors:      \(stats.vectorCount.formatted())")
+            if let storageStats = stats.storageStatistics {
+                let formatter = ByteCountFormatter()
+                formatter.countStyle = .binary
+                print("  Index Size:   \(formatter.string(fromByteCount: Int64(storageStats.totalSize)))")
+                print("  Memory Usage: \(formatter.string(fromByteCount: Int64(storageStats.memoryUsage)))")
+            }
+            if let cacheStats = stats.cacheStatistics {
+                print("  Cache Size:   \(cacheStats.entryCount) entries")
+                print("  Hit Rate:     \(String(format: "%.1f%%", cacheStats.hitRate * 100))")
+            }")
         }
         
         private func executeOptimize(context: ShellContext) async throws {
@@ -332,8 +360,10 @@ extension VectorStoreCLI {
         }
         
         private func executeCount(context: ShellContext) async throws {
-            // TODO: Get actual count
-            print("Total vectors: 50,000")
+            // Get actual count
+            let (_, store) = try await VectorStoreCLI.loadStore(at: context.storePath)
+            let stats = try await store.getStatistics()
+            print("Total vectors: \(stats.vectorCount.formatted())")
         }
         
         private func executeSet(args: [String], context: ShellContext) throws {
@@ -449,8 +479,14 @@ extension VectorStoreCLI {
         }
         
         private func showHistory() {
-            // TODO: Implement history display
-            print("Command history not yet implemented")
+            // Display command history
+            print("Command history:")
+            let recentHistory = history.suffix(20)
+            let startIndex = max(0, history.count - recentHistory.count)
+            
+            for (offset, command) in recentHistory.enumerated() {
+                print("  \(startIndex + offset + 1): \(command)")
+            }
         }
         
         private func runScript(_ path: String, config: StoreConfig) async throws {

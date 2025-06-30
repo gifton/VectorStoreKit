@@ -50,7 +50,6 @@ public struct AdaptiveDistance {
     }
     
     /// Compute adaptive distance between vectors with SIMD optimization
-    @inlinable
     public func distance(_ a: Vector512, _ b: Vector512, context: Context) -> Float {
         // Select optimal metric based on context
         let selectedMetric = selectMetric(context: context)
@@ -179,24 +178,65 @@ public struct AdaptiveDistance {
     private func computeBaseDistance(_ a: Vector512, _ b: Vector512, metric: DistanceMetric) -> Float {
         switch metric {
         case .euclidean:
-            return DistanceComputation512.euclideanDistance(a, b)
+            return sqrt(a.distanceSquared(to: b))
         case .cosine:
-            return DistanceComputation512.cosineDistance(a, b)
+            return 1.0 - a.cosineSimilarity(to: b)
         case .manhattan:
-            return DistanceComputation512.manhattanDistance(a, b)
+            // Manhattan distance: sum of absolute differences
+            let diff = a - b
+            var sum: Float = 0
+            for i in 0..<512 {
+                sum += abs(diff[i])
+            }
+            return sum
         case .dotProduct:
-            return -DistanceComputation512.dotProduct(a, b)
+            // Negative dot product for distance
+            var sum: Float = 0
+            for i in 0..<512 {
+                sum += a[i] * b[i]
+            }
+            return -sum
         case .chebyshev:
-            return DistanceComputation512.chebyshevDistance(a, b)
+            // Chebyshev distance: max absolute difference
+            let diff = a - b
+            var maxDiff: Float = 0
+            for i in 0..<512 {
+                maxDiff = max(maxDiff, abs(diff[i]))
+            }
+            return maxDiff
         case .minkowski:
-            return DistanceComputation512.minkowskiDistance(a, b, p: parameters.minkowskiP)
+            // Minkowski distance: (sum |x_i - y_i|^p)^(1/p)
+            let diff = a - b
+            var sum: Float = 0
+            let p = parameters.minkowskiP
+            for i in 0..<512 {
+                sum += pow(abs(diff[i]), p)
+            }
+            return pow(sum, 1.0/p)
         case .hamming:
-            return DistanceComputation512.hammingDistance(a, b, threshold: parameters.hammingThreshold)
+            // Hamming distance: count of different values
+            var count: Float = 0
+            let threshold = parameters.hammingThreshold
+            for i in 0..<512 {
+                if abs(a[i] - b[i]) > threshold {
+                    count += 1
+                }
+            }
+            return count
         case .jaccard:
-            return DistanceComputation512.jaccardDistance(a, b)
+            // Jaccard distance: 1 - (intersection / union)
+            var intersection: Float = 0
+            var union: Float = 0
+            for i in 0..<512 {
+                let minVal = min(a[i], b[i])
+                let maxVal = max(a[i], b[i])
+                intersection += minVal
+                union += maxVal
+            }
+            return union > 0 ? 1.0 - (intersection / union) : 0
         default:
             // For complex metrics, fall back to euclidean
-            return DistanceComputation512.euclideanDistance(a, b)
+            return sqrt(a.distanceSquared(to: b))
         }
     }
     
@@ -233,8 +273,7 @@ public struct AdaptiveDistance {
     }
     
     /// SIMD-optimized weighted distance computation
-    @inlinable
-    private func computeWeightedDistance(_ a: Vector512, _ b: Vector512, weights: [Float]) -> Float {
+    internal func computeWeightedDistance(_ a: Vector512, _ b: Vector512, weights: [Float]) -> Float {
         return a.withUnsafeMetalBytes { aBytes in
             b.withUnsafeMetalBytes { bBytes in
                 let aPtr = aBytes.bindMemory(to: SIMD8<Float>.self)
@@ -264,11 +303,10 @@ public struct AdaptiveDistance {
                         
                         let baseIdx = i * 8
                         if baseIdx + 32 <= weightsCount, let wBase = weightsBase {
-                            let wPtr = wBase.advanced(by: baseIdx).assumingMemoryBound(to: SIMD8<Float>.self)
-                            w0 = wPtr[0]
-                            w1 = wPtr[1]
-                            w2 = wPtr[2]
-                            w3 = wPtr[3]
+                            w0 = wBase.advanced(by: baseIdx).withMemoryRebound(to: SIMD8<Float>.self, capacity: 4) { ptr in ptr[0] }
+                            w1 = wBase.advanced(by: baseIdx).withMemoryRebound(to: SIMD8<Float>.self, capacity: 4) { ptr in ptr[1] }
+                            w2 = wBase.advanced(by: baseIdx).withMemoryRebound(to: SIMD8<Float>.self, capacity: 4) { ptr in ptr[2] }
+                            w3 = wBase.advanced(by: baseIdx).withMemoryRebound(to: SIMD8<Float>.self, capacity: 4) { ptr in ptr[3] }
                         } else {
                             // Handle out-of-bounds with scalar fallback
                             var w0_scalar = [Float](repeating: 1.0, count: 8)
@@ -339,8 +377,7 @@ public struct AdaptiveDistance {
     }
     
     /// SIMD-optimized sparsity computation
-    @inlinable
-    private func computeSparsity(_ dataset: [Vector512]) -> Float {
+    internal func computeSparsity(_ dataset: [Vector512]) -> Float {
         var zeroCount = 0
         var totalCount = 0
         
@@ -352,7 +389,11 @@ public struct AdaptiveDistance {
                 
                 for i in 0..<64 {
                     let values = ptr[i]
-                    let absValues = abs(values)
+                    // Use SIMD8 magnitude for absolute value
+                    var absValues = SIMD8<Float>()
+                    for k in 0..<8 {
+                        absValues[k] = abs(values[k])
+                    }
                     let isZero = absValues .< threshold
                     
                     // Count zeros using SIMD mask
@@ -370,8 +411,7 @@ public struct AdaptiveDistance {
     }
     
     /// SIMD-optimized dimensional variance computation
-    @inlinable
-    private func computeDimensionalVariance(_ dataset: [Vector512]) -> Float {
+    internal func computeDimensionalVariance(_ dataset: [Vector512]) -> Float {
         guard !dataset.isEmpty else { return 0 }
         
         // Sample for efficiency
@@ -384,39 +424,13 @@ public struct AdaptiveDistance {
         
         // First pass: compute means
         means.withUnsafeMutableBufferPointer { meansPtr in
-            let meansSIMD = meansPtr.baseAddress!.assumingMemoryBound(to: SIMD8<Float>.self)
-            
-            for vector in sample {
-                vector.withUnsafeMetalBytes { bytes in
-                    let vectorSIMD = bytes.bindMemory(to: SIMD8<Float>.self)
-                    
-                    for i in 0..<64 {
-                        meansSIMD[i] += vectorSIMD[i]
-                    }
-                }
-            }
-            
-            // Divide by sample count
-            let invSampleCount = SIMD8<Float>(repeating: 1.0 / sampleCount)
-            for i in 0..<64 {
-                meansSIMD[i] *= invSampleCount
-            }
-        }
-        
-        // Second pass: compute variances using SIMD
-        variances.withUnsafeMutableBufferPointer { variancesPtr in
-            let variancesSIMD = variancesPtr.baseAddress!.assumingMemoryBound(to: SIMD8<Float>.self)
-            
-            means.withUnsafeBufferPointer { meansPtr in
-                let meansSIMD = meansPtr.baseAddress!.assumingMemoryBound(to: SIMD8<Float>.self)
-                
+            meansPtr.baseAddress!.withMemoryRebound(to: SIMD8<Float>.self, capacity: 64) { meansSIMD in
                 for vector in sample {
                     vector.withUnsafeMetalBytes { bytes in
                         let vectorSIMD = bytes.bindMemory(to: SIMD8<Float>.self)
                         
                         for i in 0..<64 {
-                            let diff = vectorSIMD[i] - meansSIMD[i]
-                            variancesSIMD[i] += diff * diff
+                            meansSIMD[i] += vectorSIMD[i]
                         }
                     }
                 }
@@ -424,7 +438,33 @@ public struct AdaptiveDistance {
                 // Divide by sample count
                 let invSampleCount = SIMD8<Float>(repeating: 1.0 / sampleCount)
                 for i in 0..<64 {
-                    variancesSIMD[i] *= invSampleCount
+                    meansSIMD[i] *= invSampleCount
+                }
+            }
+        }
+        
+        // Second pass: compute variances using SIMD
+        variances.withUnsafeMutableBufferPointer { variancesPtr in
+            variancesPtr.baseAddress!.withMemoryRebound(to: SIMD8<Float>.self, capacity: 64) { variancesSIMD in
+                means.withUnsafeBufferPointer { meansPtr in
+                    meansPtr.baseAddress!.withMemoryRebound(to: SIMD8<Float>.self, capacity: 64) { meansSIMD in
+                        for vector in sample {
+                            vector.withUnsafeMetalBytes { bytes in
+                                let vectorSIMD = bytes.bindMemory(to: SIMD8<Float>.self)
+                                
+                                for i in 0..<64 {
+                                    let diff = vectorSIMD[i] - meansSIMD[i]
+                                    variancesSIMD[i] += diff * diff
+                                }
+                            }
+                        }
+                        
+                        // Divide by sample count
+                        let invSampleCount = SIMD8<Float>(repeating: 1.0 / sampleCount)
+                        for i in 0..<64 {
+                            variancesSIMD[i] *= invSampleCount
+                        }
+                    }
                 }
             }
         }
@@ -434,22 +474,22 @@ public struct AdaptiveDistance {
         var varianceOfVariances: Float = 0
         
         variances.withUnsafeBufferPointer { variancesPtr in
-            let variancesSIMD = variancesPtr.baseAddress!.assumingMemoryBound(to: SIMD8<Float>.self)
-            
-            var sumVec = SIMD8<Float>.zero
-            for i in 0..<64 {
-                sumVec += variancesSIMD[i]
+            variancesPtr.baseAddress!.withMemoryRebound(to: SIMD8<Float>.self, capacity: 64) { variancesSIMD in
+                var sumVec = SIMD8<Float>.zero
+                for i in 0..<64 {
+                    sumVec += variancesSIMD[i]
+                }
+                meanVariance = sumVec.sum() / 512.0
+                
+                let meanVec = SIMD8<Float>(repeating: meanVariance)
+                var sumOfSquareVec = SIMD8<Float>.zero
+                
+                for i in 0..<64 {
+                    let diff = variancesSIMD[i] - meanVec
+                    sumOfSquareVec += diff * diff
+                }
+                varianceOfVariances = sumOfSquareVec.sum() / 512.0
             }
-            meanVariance = sumVec.sum() / 512.0
-            
-            let meanVec = SIMD8<Float>(repeating: meanVariance)
-            var sumOfSquareVec = SIMD8<Float>.zero
-            
-            for i in 0..<64 {
-                let diff = variancesSIMD[i] - meanVec
-                sumOfSquareVec += diff * diff
-            }
-            varianceOfVariances = sumOfSquareVec.sum() / 512.0
         }
         
         return sqrt(varianceOfVariances) / (meanVariance + Float.ulpOfOne)
@@ -670,9 +710,9 @@ struct ParameterOptimizer {
         
         // Update adaptation rate
         if qualityGradient < 0 {
-            newParams.adaptationRate *= 0.9  // Slow down if performing poorly
+            newParams.adaptationRate = newParams.adaptationRate * 0.9  // Slow down if performing poorly
         } else {
-            newParams.adaptationRate *= 1.1  // Speed up if performing well
+            newParams.adaptationRate = newParams.adaptationRate * 1.1  // Speed up if performing well
         }
         
         // Update metric preference based on feedback

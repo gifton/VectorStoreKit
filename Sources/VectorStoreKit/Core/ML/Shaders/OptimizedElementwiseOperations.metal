@@ -455,7 +455,7 @@ kernel void batch_operations(
     constant uint& size [[buffer(2)]],
     constant uint& op_type [[buffer(3)]],  // 0: square, 1: abs, 2: sqrt, 3: reciprocal
     uint gid [[thread_position_in_grid]]
-) {
+                             ) {
     uint idx = gid * ELEMENTS_PER_THREAD;
     
     if (idx + 7 < size) {
@@ -511,3 +511,4 @@ kernel void batch_operations(
         }
     }
 }
+7

@@ -344,8 +344,8 @@ public actor CacheWarmingEngine<Vector: SIMD> where Vector.Scalar: BinaryFloatin
             correlationMatrix.removeValue(forKey: id)
             
             // Also remove from correlation targets
-            for (_, correlations) in correlationMatrix {
-                correlations.removeValue(forKey: id)
+            for key in correlationMatrix.keys {
+                correlationMatrix[key]?.removeValue(forKey: id)
             }
         }
     }

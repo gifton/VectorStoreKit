@@ -182,7 +182,7 @@ public actor DimensionReduction {
         let originalDim = vectors.first!.count
         
         // Generate random projection matrix
-        var generator = RandomNumberGenerator(seed: seed)
+        var generator = DimensionReductionRNG(seed: seed)
         let projectionMatrix = generateGaussianRandomMatrix(
             rows: targetDim,
             cols: originalDim,
@@ -469,7 +469,7 @@ public actor DimensionReduction {
     private func generateGaussianRandomMatrix(
         rows: Int,
         cols: Int,
-        generator: inout RandomNumberGenerator
+        generator: inout DimensionReductionRNG
     ) -> [Float] {
         var matrix = [Float](repeating: 0, count: rows * cols)
         
@@ -574,7 +574,7 @@ public struct RandomProjectionResult: Sendable {
     public let projectionMatrix: [Float]
 }
 
-struct RandomNumberGenerator: Swift.RandomNumberGenerator {
+struct DimensionReductionRNG: Swift.RandomNumberGenerator {
     private var state: UInt64
     
     init(seed: UInt64) {

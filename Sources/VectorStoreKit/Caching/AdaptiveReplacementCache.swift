@@ -516,6 +516,14 @@ public struct ARCCacheConfiguration: CacheConfiguration {
             description: "Constant time operations with linear space"
         )
     }
+    
+    public func memoryBudget() -> Int {
+        return maxMemory
+    }
+    
+    public func evictionPolicy() -> EvictionPolicy {
+        return .arc
+    }
 }
 
 // MARK: - Ordered Set Helper

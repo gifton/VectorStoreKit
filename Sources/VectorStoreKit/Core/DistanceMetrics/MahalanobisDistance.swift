@@ -45,7 +45,6 @@ public struct MahalanobisDistance {
     }
     
     /// Compute Mahalanobis distance between two vectors with SIMD optimization
-    @inlinable
     public func distance(_ a: Vector512, _ b: Vector512) -> Float {
         // Compute difference vector using SIMD
         let diff = a - b
@@ -68,16 +67,18 @@ public struct MahalanobisDistance {
         var preTransformedQuery = [Float](repeating: 0, count: 512)
         
         // Use batch BLAS operation for query pre-transformation
-        cblas_sgemv(
-            CblasColMajor,
-            CblasNoTrans,
-            512, 512,
-            1.0,
-            invertedCovariance.storage, 512,
-            queryArray, 1,
-            0.0,
-            &preTransformedQuery, 1
-        )
+        invertedCovariance.withUnsafeBufferPointer { storagePtr in
+            cblas_sgemv(
+                CblasColMajor,
+                CblasNoTrans,
+                512, 512,
+                1.0,
+                storagePtr.baseAddress!, 512,
+                queryArray, 1,
+                0.0,
+                &preTransformedQuery, 1
+            )
+        }
         
         // Process candidates with prefetching
         results.withUnsafeMutableBufferPointer { resultsPtr in
@@ -146,6 +147,11 @@ struct CovarianceMatrix {
         }
         
         self.storage = inversed
+    }
+    
+    /// Access storage for BLAS operations
+    func withUnsafeBufferPointer<R>(_ body: (UnsafeBufferPointer<Float>) throws -> R) rethrows -> R {
+        try storage.withUnsafeBufferPointer(body)
     }
     
     /// Transform vector by the inverted covariance matrix
@@ -241,7 +247,7 @@ struct CovarianceMatrix {
 }
 
 /// Thread-safe workspace for Mahalanobis computation
-struct MahalanobisWorkspace {
+final class MahalanobisWorkspace {
     // Pre-allocated buffers for intermediate results
     private let tempBuffer: UnsafeMutablePointer<Float>
     

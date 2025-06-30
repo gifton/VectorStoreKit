@@ -78,7 +78,7 @@ where Vector.Scalar: BinaryFloatingPoint {
     private let levelConfigurations: [CacheLevel: CacheLevelConfiguration]
     
     /// Individual cache instances for each level
-    private var caches: [CacheLevel: any VectorCache<Vector>] = [:]
+    private var caches: [CacheLevel: any VectorCache] = [:]
     
     /// Unified monitoring system
     private let monitor: CacheMonitor
@@ -305,7 +305,7 @@ where Vector.Scalar: BinaryFloatingPoint {
         level: CacheLevel,
         config: CacheLevelConfiguration,
         storageBackend: (any CacheStorageBackend<Vector>)?
-    ) async throws -> any VectorCache<Vector> {
+    ) async throws -> any VectorCache {
         switch config.evictionPolicy {
         case EvictionPolicy.lru:
             return try await BasicLRUVectorCache<Vector>(
@@ -759,42 +759,56 @@ public struct MultiLevelPerformanceAnalysis: Sendable {
 }
 
 /// Cache warming plan
-struct CacheWarmingPlan {
-    enum Action {
+public struct CacheWarmingPlan {
+    public enum Action {
         case preload(ids: [VectorID], level: CacheLevel)
         case promote(id: VectorID, from: CacheLevel, to: CacheLevel)
         case prefetch(predictions: [VectorID: Float], level: CacheLevel)
     }
     
-    let actions: [Action]
+    public let actions: [Action]
+    
+    public init(actions: [Action]) {
+        self.actions = actions
+    }
 }
 
 /// Cache state snapshot
-struct CacheState {
-    let levelStates: [CacheLevel: LevelState]
+public struct CacheState {
+    public let levelStates: [CacheLevel: LevelState]
+    
+    public init(levelStates: [CacheLevel: LevelState]) {
+        self.levelStates = levelStates
+    }
 }
 
 /// Level state
-struct LevelState {
-    let count: Int
-    let memoryUsage: Int
-    let hitRate: Float
+public struct LevelState {
+    public let count: Int
+    public let memoryUsage: Int
+    public let hitRate: Float
+    
+    public init(count: Int, memoryUsage: Int, hitRate: Float) {
+        self.count = count
+        self.memoryUsage = memoryUsage
+        self.hitRate = hitRate
+    }
 }
 
 /// Comprehensive cache metrics
-struct ComprehensiveCacheMetrics {
-    let levelMetrics: [CacheLevel: LevelMetrics]
-    let globalHitRate: Float
-    let totalMemoryUsage: Int
-    let accessPatternStrength: Float
+public struct ComprehensiveCacheMetrics {
+    public let levelMetrics: [CacheLevel: LevelMetrics]
+    public let globalHitRate: Float
+    public let totalMemoryUsage: Int
+    public let accessPatternStrength: Float
 }
 
 /// Level-specific metrics
-struct LevelMetrics {
-    let hitRate: Float
-    let memoryUsage: Int
-    let count: Int
-    let evictionRate: Float
+public struct LevelMetrics {
+    public let hitRate: Float
+    public let memoryUsage: Int
+    public let count: Int
+    public let evictionRate: Float
 }
 
 /// Cache optimization plan

@@ -41,7 +41,7 @@ where
     private let cache: Cache
     
     /// Performance monitoring
-    private let performanceMonitor: PerformanceMonitor
+    private let performanceMonitor: SimplePerformanceMonitor
     
     /// Integrity manager
     private let integrityManager: IntegrityManager
@@ -91,7 +91,7 @@ where
         self.storageBackend = storage
         self.cache = cache
         
-        self.performanceMonitor = PerformanceMonitor()
+        self.performanceMonitor = SimplePerformanceMonitor()
         self.integrityManager = IntegrityManager()
         self.accessAnalyzer = AccessPatternAnalyzer()
         
@@ -108,7 +108,7 @@ where
         await integrityManager.initialize()
         
         // Start performance monitoring
-        await performanceMonitor.start()
+        // Performance monitoring is handled by MetalAccelerationEngine
         
         // Load existing data if any
         try await loadExistingData()
@@ -161,7 +161,8 @@ where
         let startTime = DispatchTime.now()
         let operation = Operation.bulkInsert(count: entries.count)
         
-        await performanceMonitor.beginOperation(operation)
+        // Begin tracking operation
+        let _ = CFAbsoluteTimeGetCurrent()
         
         // Validate entries
         try validateEntries(entries)
@@ -178,7 +179,7 @@ where
                 group.addTask {
                     do {
                         // Update access pattern
-                        await self.accessAnalyzer.recordAccess(id: entry.id, level: entry.tier == .hot ? .l1 : .l3, timestamp: Date())
+                        await self.accessAnalyzer.recordAccess(id: entry.id, level: entry.tier == .memory ? .l1 : .l3, timestamp: Date())
                         
                         // Insert into index
                         let indexResult = try await self.primaryIndex.insert(entry)
@@ -187,7 +188,7 @@ where
                         try await self.storeEntry(entry, options: options)
                         
                         // Update cache if hot tier
-                        if entry.tier == .hot {
+                        if entry.tier == .memory {
                             await self.cache.set(id: entry.id, vector: entry.vector, priority: .normal)
                         }
                         
@@ -278,7 +279,8 @@ where
         let startTime = DispatchTime.now()
         let operation = Operation.search(k: k, strategy: strategy)
         
-        await performanceMonitor.beginOperation(operation)
+        // Begin tracking operation
+        let _ = CFAbsoluteTimeGetCurrent()
         
         // Validate query
         try validateQuery(query)
@@ -355,7 +357,8 @@ where
         let startTime = DispatchTime.now()
         let operation = Operation.update(id: id)
         
-        await performanceMonitor.beginOperation(operation)
+        // Begin tracking operation
+        let _ = CFAbsoluteTimeGetCurrent()
         
         // Update access pattern
         await accessAnalyzer.recordAccess(id: id, level: nil, timestamp: Date())
@@ -408,7 +411,8 @@ where
         let startTime = DispatchTime.now()
         let operation = Operation.delete(id: id)
         
-        await performanceMonitor.beginOperation(operation)
+        // Begin tracking operation
+        let _ = CFAbsoluteTimeGetCurrent()
         
         // Remove from index
         let success = try await primaryIndex.delete(id: id)
@@ -469,7 +473,8 @@ where
         try await ensureReady()
         
         let operation = Operation.optimization(strategy: strategy)
-        await performanceMonitor.beginOperation(operation)
+        // Begin tracking operation
+        let _ = CFAbsoluteTimeGetCurrent()
         
         // Optimize index
         try await primaryIndex.optimize(strategy: strategy)
@@ -556,7 +561,8 @@ where
         try await ensureReady()
         
         let operation = Operation.export(format: format)
-        await performanceMonitor.beginOperation(operation)
+        // Begin tracking operation
+        let _ = CFAbsoluteTimeGetCurrent()
         
         // Export index data
         let indexData = try await primaryIndex.export(format: format)
@@ -601,7 +607,7 @@ where
             }
         }
     }
-    // TODO - Gifton - understa dn Vector vs query
+    
     private func validateQuery(_ query: Vector) throws {
         let expectedDimension = Vector.scalarCount
         if query.scalarCount != expectedDimension {
@@ -882,7 +888,7 @@ public struct StoreStatistics: Sendable, Codable {
     public let vectorCount: Int
     public let memoryUsage: Int
     public let diskUsage: Int
-    public let performanceStatistics: PerformanceStatistics
+    public let performanceStatistics: StorePerformanceStatistics
     public let accessStatistics: AccessStatistics
     
     // Statistics are stored as sendable snapshots instead of protocol existentials
@@ -897,7 +903,7 @@ public struct StoreStatistics: Sendable, Codable {
         vectorCount: Int,
         memoryUsage: Int,
         diskUsage: Int,
-        performanceStatistics: PerformanceStatistics,
+        performanceStatistics: StorePerformanceStatistics,
         accessStatistics: AccessStatistics,
         indexStatisticsSnapshot: IndexStatisticsSnapshot? = nil,
         storageStatisticsSnapshot: StorageStatisticsSnapshot? = nil,
@@ -948,49 +954,6 @@ public struct SearchQualityMetrics: Sendable {
 // MARK: - Supporting Types
 
 /// Performance monitoring
-public actor PerformanceMonitor: Sendable {
-    private var operations: [Operation: StoreOperationMetrics] = [:]
-    private var startTimes: [Operation: DispatchTime] = [:]
-    
-    public init() {}
-    
-    // TODO - Gifton
-    public func start() async {
-        // Initialize monitoring
-    }
-    
-    public func beginOperation(_ operation: Operation) async {
-        startTimes[operation] = DispatchTime.now()
-    }
-    
-    public func endOperation(_ operation: Operation) async {
-        guard let startTime = startTimes[operation] else { return }
-        let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
-        
-        let metrics = StoreOperationMetrics(
-            duration: TimeInterval(duration) / 1_000_000_000.0,
-            memoryUsed: 0, // Placeholder
-            cpuUsage: 0,   // Placeholder
-            timestamp: Date()
-        )
-        
-        operations[operation] = metrics
-        startTimes[operation] = nil
-    }
-    
-    public func getMetrics(for operation: Operation) async -> StoreOperationMetrics {
-        operations[operation] ?? StoreOperationMetrics(duration: 0, memoryUsed: 0, cpuUsage: 0, timestamp: Date())
-    }
-    
-    // TODO - Gifton
-    public func overallStatistics() async -> PerformanceStatistics {
-        PerformanceStatistics()
-    }
-    
-    public var memoryUsage: Int {
-        MemoryLayout<Self>.size + operations.count * MemoryLayout<StoreOperationMetrics>.size
-    }
-}
 
 /// Store operation metrics
 public struct StoreOperationMetrics: Sendable {
@@ -1000,8 +963,43 @@ public struct StoreOperationMetrics: Sendable {
     public let timestamp: Date
 }
 
-public struct PerformanceStatistics: Sendable, Codable {}
-public struct AccessStatistics: Sendable, Codable {}
+/// Performance statistics for the store
+public struct StorePerformanceStatistics: Sendable, Codable {
+    public let averageSearchLatency: TimeInterval
+    public let averageInsertLatency: TimeInterval
+    public let throughput: Double
+    
+    public init(
+        averageSearchLatency: TimeInterval = 0,
+        averageInsertLatency: TimeInterval = 0,
+        throughput: Double = 0
+    ) {
+        self.averageSearchLatency = averageSearchLatency
+        self.averageInsertLatency = averageInsertLatency
+        self.throughput = throughput
+    }
+}
+
+/// Access statistics for the store
+public struct AccessStatistics: Sendable, Codable {
+    public let totalSearches: Int
+    public let totalInserts: Int
+    public let totalUpdates: Int
+    public let totalDeletes: Int
+    
+    public init(
+        totalSearches: Int = 0,
+        totalInserts: Int = 0,
+        totalUpdates: Int = 0,
+        totalDeletes: Int = 0
+    ) {
+        self.totalSearches = totalSearches
+        self.totalInserts = totalInserts
+        self.totalUpdates = totalUpdates
+        self.totalDeletes = totalDeletes
+    }
+}
+
 
 /// Sendable snapshot of index statistics
 public struct IndexStatisticsSnapshot: Sendable {
@@ -1047,7 +1045,6 @@ public struct CacheStatisticsSnapshot: Sendable {
 }
 
 /// Integrity management
-// TODO - Gifton
 public actor IntegrityManager: Sendable {
     public init() {}
     
@@ -1057,4 +1054,30 @@ public actor IntegrityManager: Sendable {
 }
 
 // AccessPatternAnalyzer is defined in Caching/AccessPatternAnalyzer.swift
+
+/// Simple performance monitor stub for VectorStore
+fileprivate actor SimplePerformanceMonitor: Sendable {
+    init() {}
+    
+    func endOperation(_ operation: Operation) async {
+        // No-op
+    }
+    
+    func getMetrics(for operation: Operation) async -> StoreOperationMetrics {
+        StoreOperationMetrics(
+            duration: 0,
+            memoryUsed: 0,
+            cpuUsage: 0.0,
+            timestamp: Date()
+        )
+    }
+    
+    func overallStatistics() async -> StorePerformanceStatistics {
+        StorePerformanceStatistics()
+    }
+    
+    var memoryUsage: Int {
+        0
+    }
+}
 

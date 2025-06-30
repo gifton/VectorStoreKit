@@ -155,7 +155,7 @@ public actor AdaptiveCacheSizer {
         )
         sizeHistory[level]?.append(adjustment)
         
-        logger.info("Adjusted \(level) cache size: \(oldSize) -> \(newSize) (factor: \(clampedFactor))")
+        logger.info("Adjusted \(level.rawValue) cache size: \(oldSize) -> \(newSize) (factor: \(clampedFactor))")
     }
     
     /// Get current configuration for a level
@@ -327,7 +327,7 @@ public actor AdaptiveCacheSizer {
 
 /// Size adjustment recommendation
 public struct SizeRecommendation: Sendable {
-    public enum AdjustmentType {
+    public enum AdjustmentType: Sendable {
         case increase
         case decrease
         case rebalance

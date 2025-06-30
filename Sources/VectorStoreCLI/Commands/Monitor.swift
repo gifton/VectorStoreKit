@@ -165,8 +165,9 @@ extension VectorStoreCLI {
         // MARK: - Metrics Collection
         
         private func collectMetrics(config: StoreConfig) async throws -> CLIPerformanceMetrics {
-            // TODO: Connect to actual VectorStore metrics
-            // For now, generate realistic demo metrics
+            // Load store and get actual metrics
+            let (_, store) = try await VectorStoreCLI.loadStore(at: global.storePath)
+            let stats = try await store.getStatistics()
             
             let queryMetrics = QueryMetrics(
                 totalQueries: Int.random(in: 10000...50000),

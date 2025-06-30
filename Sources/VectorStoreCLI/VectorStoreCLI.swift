@@ -117,7 +117,7 @@ struct StoreConfig: Codable {
 // MARK: - Error Types
 
 enum CLIError: LocalizedError {
-    case storeNotInitialized(path: String)
+    case storeNotInitialized(String)
     case invalidConfiguration(String)
     case importError(String)
     case exportError(String)
@@ -125,6 +125,7 @@ enum CLIError: LocalizedError {
     case fileNotFound(String)
     case invalidFormat(String)
     case operationFailed(String)
+    case unsupportedBackend(String)
     
     var errorDescription: String? {
         switch self {
@@ -144,6 +145,8 @@ enum CLIError: LocalizedError {
             return "Invalid format: \(format)"
         case .operationFailed(let message):
             return "Operation failed: \(message)"
+        case .unsupportedBackend(let message):
+            return "Unsupported backend: \(message)"
         }
     }
 }
@@ -161,10 +164,15 @@ extension VectorStoreCLI {
         }
     }
     
-    static func loadStore(at path: String) async throws -> (config: StoreConfig, store: AnyObject) {
+    static func loadStore(at path: String) async throws -> (config: StoreConfig, store: VectorUniverse) {
         let config = try StoreConfig.load(from: path)
-        // TODO: Initialize actual store based on config
-        return (config, NSObject()) // Placeholder
+        
+        // Initialize store using CLIStoreManager
+        let manager = CLIStoreManager()
+        try await manager.initialize(config: config)
+        let store = try await manager.getStore()
+        
+        return (config, store)
     }
 }
 
@@ -185,8 +193,15 @@ enum OutputFormat {
             let jsonData = try encoder.encode(data)
             return String(data: jsonData, encoding: .utf8) ?? ""
         case .table:
-            // TODO: Implement table formatting
-            return String(describing: data)
+            // Table formatting requires specific data types
+            if let searchResults = data as? [SearchResult] {
+                return searchResults.formatAsTable()
+            } else if let storeInfo = data as? StoreInfo {
+                return storeInfo.formatAsTable()
+            } else {
+                // Fallback to JSON for other types
+                return try format(.json).format(data)
+            }
         }
     }
 }

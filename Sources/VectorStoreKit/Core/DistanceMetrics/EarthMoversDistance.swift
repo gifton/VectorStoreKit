@@ -27,7 +27,6 @@ public struct EarthMoversDistance {
     }
     
     /// Compute EMD between two probability distributions with SIMD optimization
-    @inlinable
     public func distance(_ a: Vector512, _ b: Vector512) -> Float {
         // Normalize vectors to probability distributions using SIMD
         let distA = normalizeToDistribution(a)
@@ -232,8 +231,7 @@ public struct EarthMoversDistance {
     }
     
     /// SIMD-optimized normalization to probability distribution
-    @inlinable
-    private func normalizeToDistribution(_ vector: Vector512) -> [Float] {
+    internal func normalizeToDistribution(_ vector: Vector512) -> [Float] {
         return vector.withUnsafeMetalBytes { bytes in
             let ptr = bytes.bindMemory(to: SIMD8<Float>.self)
             
