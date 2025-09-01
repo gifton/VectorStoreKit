@@ -554,11 +554,11 @@ public struct AMXDevice: Sendable {}
 
 public struct AMXCapabilities: Sendable {
     public let matrixSize: Int
-    public let supportedTypes: Set<DataType>
+    public let supportedTypes: Set<AcceleratorDataType>
     public let throughput: Float // TFLOPS
 }
 
-public enum DataType: Sendable {
+public enum AcceleratorDataType: Sendable {
     case float32
     case float16
     case int8

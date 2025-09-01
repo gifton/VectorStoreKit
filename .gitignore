@@ -17,6 +17,7 @@ DerivedData/
 *.log
 build/
 .build/
+*.air
 
 # IDE
 .vscode/
@@ -32,3 +33,5 @@ Docs/development/
 build_output.txt
 
 CLAUDE.md
+devdocs
+.claude

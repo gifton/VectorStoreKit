@@ -227,9 +227,9 @@ public struct HNSWPerformanceIndexingStrategy: IndexingStrategy, Sendable {
 // MARK: - IVF Indexing Strategy
 
 /// Inverted File Index strategy for large-scale similarity search
-public struct IVFIndexingStrategy: IndexingStrategy, Sendable {
+public struct IVFIndexingStrategy<Vector: SIMD & Sendable, Metadata: Codable & Sendable>: IndexingStrategy, Sendable where Vector.Scalar: BinaryFloatingPoint {
     public typealias Config = IVFConfiguration
-    public typealias IndexType = IVFIndex<SIMD32<Float>, [String: String]>
+    public typealias IndexType = IVFIndex<Vector, Metadata>
     
     public let identifier = "ivf"
     public let characteristics = IndexCharacteristics(
@@ -240,62 +240,33 @@ public struct IVFIndexingStrategy: IndexingStrategy, Sendable {
     )
     
     private let customConfig: Config?
+    private let numClusters: Int
+    private let nprobe: Int
     
-    public init(configuration: Config? = nil) {
+    public init(numClusters: Int = 1024, nprobe: Int = 16, configuration: Config? = nil) {
+        self.numClusters = numClusters
+        self.nprobe = nprobe
         self.customConfig = configuration
     }
     
     public func createIndex() async throws -> IndexType {
-        guard let config = customConfig else {
-            throw IndexValidationError.invalidParameter("IVF index requires configuration with dimensions")
-        }
-        return try await IVFIndex(configuration: config)
+        let config = customConfig ?? IVFConfiguration(
+            dimensions: Vector.scalarCount,
+            numberOfCentroids: numClusters,
+            numberOfProbes: nprobe
+        )
+        return try await IVFIndex<Vector, Metadata>(configuration: config)
     }
     
-    public func createIndex<Vector: SIMD, Metadata: Codable & Sendable>(
+    public func createIndex<V: SIMD, M: Codable & Sendable>(
         configuration: Config,
-        vectorType: Vector.Type,
-        metadataType: Metadata.Type
-    ) async throws -> IVFIndex<SIMD32<Float>, [String: String]> where Vector.Scalar: BinaryFloatingPoint {
+        vectorType: V.Type,
+        metadataType: M.Type
+    ) async throws -> IndexType where V.Scalar: BinaryFloatingPoint {
         let config = customConfig ?? configuration
-        return try await IVFIndex(configuration: config)
+        return try await IVFIndex<Vector, Metadata>(configuration: config)
     }
 }
 
-// MARK: - Learned Indexing Strategy
-
-/// Machine learning-based adaptive indexing strategy
-public struct LearnedIndexingStrategy: IndexingStrategy, Sendable {
-    public typealias Config = VectorStoreKit.LearnedIndexConfiguration
-    public typealias IndexType = VectorStoreKit.LearnedIndex<SIMD32<Float>, [String: String]>
-    
-    public let identifier = "learned"
-    public let characteristics = IndexCharacteristics(
-        approximation: .adaptive,
-        dynamism: .fullyDynamic,
-        scalability: .excellent,
-        parallelism: .full
-    )
-    
-    private let customConfig: Config?
-    
-    public init(configuration: Config? = nil) {
-        self.customConfig = configuration
-    }
-    
-    public func createIndex() async throws -> IndexType {
-        let config = customConfig ?? Config(dimensions: 128)
-        return try await IndexType(configuration: config)
-    }
-    
-    public func createIndex<Vector: SIMD, Metadata: Codable & Sendable>(
-        configuration: Config,
-        vectorType: Vector.Type,
-        metadataType: Metadata.Type
-    ) async throws -> VectorStoreKit.LearnedIndex<SIMD32<Float>, [String: String]> where Vector.Scalar: BinaryFloatingPoint {
-        let config = customConfig ?? configuration
-        return try await VectorStoreKit.LearnedIndex(configuration: config)
-    }
-}
 
 

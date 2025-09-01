@@ -1298,7 +1298,7 @@ where Vector.Scalar: BinaryFloatingPoint {
                 id: candidate.nodeID,
                 distance: candidate.distance,
                 metadata: node.metadata,
-                tier: .hot, // HNSW is always hot tier
+                tier: .memory, // HNSW index data is always in memory tier for fast access
                 similarityAnalysis: similarityAnalysis,
                 provenance: provenance,
                 confidence: calculateConfidence(candidate.distance)
@@ -1757,7 +1757,7 @@ where Vector.Scalar: BinaryFloatingPoint {
         
         return Float(actualConnections) / Float(totalPossibleConnections)
     }
-    // TODO - Gifton
+    
     func exportBinary() async throws -> Data { return Data() }
     func exportJSON() async throws -> Data { return Data() }
     func importBinary(_ data: Data) async throws {}
@@ -1771,8 +1771,7 @@ where Vector.Scalar: BinaryFloatingPoint {
         let tempVector = StoredVector(
             id: UUID().uuidString,
             vector: [], // Vector data not needed for metadata filtering
-            metadata: metadataData,
-            timestamp: Date()
+            metadata: metadataData
         )
         
         // Use FilterEvaluator for consistent filtering

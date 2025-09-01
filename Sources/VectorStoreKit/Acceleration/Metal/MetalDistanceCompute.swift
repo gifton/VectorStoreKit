@@ -16,6 +16,7 @@ public actor MetalDistanceCompute {
     private let bufferPool: MetalBufferPool
     private let pipelineManager: MetalPipelineManager
     private let profiler: MetalProfiler?
+    private let commandBufferPool: MetalCommandBufferPool
     
     private let logger = Logger(subsystem: "VectorStoreKit", category: "MetalDistanceCompute")
     
@@ -25,12 +26,15 @@ public actor MetalDistanceCompute {
         device: MetalDevice,
         bufferPool: MetalBufferPool,
         pipelineManager: MetalPipelineManager,
-        profiler: MetalProfiler? = nil
+        profiler: MetalProfiler? = nil,
+        commandBufferPool: MetalCommandBufferPool? = nil
     ) {
         self.device = device
         self.bufferPool = bufferPool
         self.pipelineManager = pipelineManager
         self.profiler = profiler
+        let mtlDevice = device.device
+        self.commandBufferPool = commandBufferPool ?? MetalCommandBufferPool(device: mtlDevice, profiler: profiler)
     }
     
     // MARK: - Distance Computation
@@ -136,6 +140,118 @@ public actor MetalDistanceCompute {
         }
         
         return results
+    }
+    
+    // MARK: - Optimized Vector512 Support
+    
+    /// Compute distances for 512-dimensional vectors with maximum optimization
+    public func computeDistances512(
+        query: Vector512,
+        candidates: [Vector512],
+        metric: DistanceMetric,
+        normalized: Bool = false
+    ) async throws -> [Float] {
+        
+        let startTime = CFAbsoluteTimeGetCurrent()
+        
+        guard !candidates.isEmpty else {
+            throw MetalComputeError.emptyInput(parameter: "candidates")
+        }
+        
+        logger.debug("Computing distances for \(candidates.count) 512-dim vectors")
+        
+        // Use optimized pipeline names
+        let pipelineName: String
+        switch metric {
+        case .euclidean:
+            pipelineName = "euclideanDistance512_simd"
+        case .cosine:
+            pipelineName = normalized ? "cosineDistance512_normalized" : "cosineDistance512_simd"
+        default:
+            // Fall back to generic implementation for other metrics
+            return try await computeDistances(query: query, candidates: candidates, metric: metric)
+        }
+        
+        let pipeline: MTLComputePipelineState
+        do {
+            pipeline = try await pipelineManager.getPipeline(functionName: pipelineName)
+        } catch {
+            // Fallback if optimized shader is not available
+            logger.warning("Optimized shader \(pipelineName) not found, falling back to generic")
+            return try await computeDistances(query: query, candidates: candidates, metric: metric)
+        }
+        
+        // Prepare buffers - use float4 layout for better GPU efficiency
+        let queryData = query.withUnsafeMetalBytes { Data($0) }
+        let queryBuffer = try await bufferPool.getBuffer(for: queryData)
+        
+        // Pack candidates efficiently
+        var candidatesData = Data()
+        candidatesData.reserveCapacity(candidates.count * 512 * MemoryLayout<Float>.size)
+        for candidate in candidates {
+            candidate.withUnsafeMetalBytes { bytes in
+                candidatesData += bytes
+            }
+        }
+        
+        let candidatesBuffer = try await bufferPool.getBuffer(for: candidatesData)
+        let resultsBuffer = try await bufferPool.getBuffer(size: candidates.count * MemoryLayout<Float>.size)
+        
+        defer {
+            Task {
+                await bufferPool.returnBuffer(queryBuffer)
+                await bufferPool.returnBuffer(candidatesBuffer)
+                await bufferPool.returnBuffer(resultsBuffer)
+            }
+        }
+        
+        // Execute optimized computation
+        let commandBuffer = try await commandBufferPool.getCommandBuffer(label: "Distance512:\(metric)")
+        
+        guard let encoder = commandBuffer.buffer.makeComputeCommandEncoder() else {
+            throw MetalComputeError.computeEncoderCreationFailed
+        }
+        
+        encoder.setComputePipelineState(pipeline)
+        encoder.setBuffer(queryBuffer, offset: 0, index: 0)
+        encoder.setBuffer(candidatesBuffer, offset: 0, index: 1)
+        encoder.setBuffer(resultsBuffer, offset: 0, index: 2)
+        
+        // Optimal thread configuration for 512-dim vectors
+        let threadsPerThreadgroup = MTLSize(width: 64, height: 1, depth: 1)
+        let threadgroups = MTLSize(
+            width: (candidates.count + 63) / 64,
+            height: 1,
+            depth: 1
+        )
+        
+        encoder.dispatchThreadgroups(threadgroups, threadsPerThreadgroup: threadsPerThreadgroup)
+        encoder.endEncoding()
+        
+        await withCheckedContinuation { continuation in
+            commandBuffer.addCompletedHandler { _ in
+                continuation.resume()
+            }
+            commandBuffer.commit()
+        }
+        
+        if let error = commandBuffer.buffer.error {
+            throw MetalComputeError.commandBufferExecutionFailed(error: error.localizedDescription)
+        }
+        
+        // Extract results
+        let resultsPointer = resultsBuffer.contents().bindMemory(
+            to: Float.self,
+            capacity: candidates.count
+        )
+        let distances = Array(UnsafeBufferPointer(start: resultsPointer, count: candidates.count))
+        
+        let duration = CFAbsoluteTimeGetCurrent() - startTime
+        await profiler?.recordOperation(.distanceComputation, duration: duration, dataSize: candidates.count)
+        
+        logger.debug("512-dim distance computation completed in \(duration)s")
+        
+        return distances
     }
     
     // MARK: - Batch Operations
@@ -274,11 +390,9 @@ public actor MetalDistanceCompute {
         }
         
         // Execute batch computation
-        guard let commandBuffer = await device.makeCommandBuffer() else {
-            throw MetalComputeError.commandBufferCreationFailed
-        }
+        let commandBuffer = try await commandBufferPool.getCommandBuffer(label: "BatchDistance:\(metric)")
         
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+        guard let encoder = commandBuffer.buffer.makeComputeCommandEncoder() else {
             throw MetalComputeError.computeEncoderCreationFailed
         }
         
@@ -309,7 +423,7 @@ public actor MetalDistanceCompute {
             commandBuffer.commit()
         }
         
-        if let error = commandBuffer.error {
+        if let error = commandBuffer.buffer.error {
             throw MetalComputeError.commandBufferExecutionFailed(error: error.localizedDescription)
         }
         
@@ -370,31 +484,49 @@ public actor MetalDistanceCompute {
         vectorDimension: Int
     ) async throws -> [Float] {
         
-        // Get pipeline name first
-        let pipelineName: MetalPipelineManager.StandardPipeline
+        // Check if we should use optimized kernels
+        let use512Optimization = vectorDimension == 512
+        let useOptimizedKernel = vectorDimension % 4 == 0 // Can use float4 optimizations
         
-        switch metric {
-        case .euclidean:
-            pipelineName = .euclideanDistance
-        case .cosine:
-            pipelineName = .cosineDistance
-        case .manhattan:
-            pipelineName = .manhattanDistance
-        case .dotProduct:
-            pipelineName = .dotProduct
-        default:
-            throw MetalComputeError.unsupportedOperation(operation: "Distance metric", reason: "Metric \(metric) not supported")
+        // Get pipeline name
+        let pipelineName: String
+        
+        if use512Optimization {
+            // Use highly optimized 512-dimensional kernels
+            switch metric {
+            case .euclidean:
+                pipelineName = "euclideanDistance512_simd"
+            case .cosine:
+                pipelineName = "cosineDistance512_simd"
+            default:
+                // Fall back to standard kernels for other metrics
+                pipelineName = getStandardPipelineName(for: metric)
+            }
+        } else if useOptimizedKernel && metric == .euclidean {
+            // Use optimized float4 kernel with warp primitives
+            pipelineName = "euclideanDistanceWarpOptimized"
+        } else {
+            pipelineName = getStandardPipelineName(for: metric)
         }
         
-        // Get pipeline directly within the same context
-        let pipeline = try await pipelineManager.getPipeline(for: pipelineName)
+        // Get pipeline, with fallback to standard if optimized isn't available
+        let pipeline: MTLComputePipelineState
+        do {
+            pipeline = try await pipelineManager.getPipeline(functionName: pipelineName)
+        } catch {
+            if pipelineName.contains("Optimized") || pipelineName.contains("512") {
+                logger.debug("Optimized shader \(pipelineName) not available, falling back to standard")
+                let fallbackName = getStandardPipelineName(for: metric)
+                pipeline = try await pipelineManager.getPipeline(functionName: fallbackName)
+            } else {
+                throw error
+            }
+        }
         
         // Execute the computation inline to avoid passing pipeline
-        guard let commandBuffer = await device.makeCommandBuffer() else {
-            throw MetalComputeError.commandBufferCreationFailed
-        }
+        let commandBuffer = try await commandBufferPool.getCommandBuffer(label: "Distance:\(metric)")
         
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+        guard let encoder = commandBuffer.buffer.makeComputeCommandEncoder() else {
             throw MetalComputeError.computeEncoderCreationFailed
         }
         
@@ -426,7 +558,7 @@ public actor MetalDistanceCompute {
         }
         
         // Check for execution errors
-        if let error = commandBuffer.error {
+        if let error = commandBuffer.buffer.error {
             throw MetalComputeError.commandBufferExecutionFailed(error: error.localizedDescription)
         }
         
@@ -447,11 +579,9 @@ public actor MetalDistanceCompute {
         vectorDimension: Int
     ) async throws -> [Float] {
         
-        guard let commandBuffer = await device.makeCommandBuffer() else {
-            throw MetalComputeError.commandBufferCreationFailed
-        }
+        let commandBuffer = try await commandBufferPool.getCommandBuffer(label: "DistanceCompute")
         
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+        guard let encoder = commandBuffer.buffer.makeComputeCommandEncoder() else {
             throw MetalComputeError.computeEncoderCreationFailed
         }
         
@@ -483,7 +613,7 @@ public actor MetalDistanceCompute {
         }
         
         // Check for execution errors
-        if let error = commandBuffer.error {
+        if let error = commandBuffer.buffer.error {
             throw MetalComputeError.commandBufferExecutionFailed(error: error.localizedDescription)
         }
         
@@ -493,6 +623,22 @@ public actor MetalDistanceCompute {
             capacity: candidateCount
         )
         return Array(UnsafeBufferPointer(start: resultsPointer, count: candidateCount))
+    }
+
+    // Helper method to get standard pipeline names
+    private func getStandardPipelineName(for metric: DistanceMetric) -> String {
+        switch metric {
+        case .euclidean:
+            return "euclideanDistance"
+        case .cosine:
+            return "cosineDistance"
+        case .manhattan:
+            return "manhattanDistance"
+        case .dotProduct:
+            return "dotProduct"
+        default:
+            return "euclideanDistance" // Default fallback
+        }
     }
 }
 
@@ -513,16 +659,7 @@ public enum MetalDistanceError: Error, LocalizedError {
     }
 }
 
-// MARK: - Array Extension
-
-extension Array {
-    /// Split array into chunks of specified size
-    func chunked(into size: Int) -> [[Element]] {
-        return stride(from: 0, to: count, by: size).map {
-            Array(self[$0 ..< Swift.min($0 + size, count)])
-        }
-    }
-}
+// Array.chunked extension removed - already defined in MetalDistanceComputeOptimized
 
 // MARK: - CPU Fallback
 

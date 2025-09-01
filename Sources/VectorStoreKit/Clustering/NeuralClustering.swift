@@ -4,6 +4,7 @@
 
 import Foundation
 import simd
+@preconcurrency import Metal
 
 /// Neural clustering for IVF index
 public actor NeuralClustering {
@@ -15,6 +16,7 @@ public actor NeuralClustering {
     private var centroids: [[Float]] = []
     private var queryHistory: RingBuffer<[Float]>
     private var performanceMetrics: NeuralClusteringMetrics
+    private let metalPipeline: MetalMLPipeline
     
     // MARK: - Initialization
     
@@ -22,6 +24,12 @@ public actor NeuralClustering {
         self.configuration = configuration
         self.queryHistory = RingBuffer(capacity: configuration.historySize)
         self.performanceMetrics = NeuralClusteringMetrics()
+        
+        // Initialize Metal pipeline
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw NeuralClusteringError.metalNotAvailable
+        }
+        self.metalPipeline = try await MetalMLPipeline(device: device)
         
         // Initialize neural networks
         try await initializeNetworks()
@@ -49,13 +57,31 @@ public actor NeuralClustering {
             epochs: configuration.trainingEpochs,
             batchSize: configuration.batchSize,
             lossFunction: .crossEntropy,
-            earlyStoppingPatience: 10,
-            gradientClipValue: 1.0
+            earlyStoppingPatience: 10
         )
         
+        // Convert inputs and targets to MetalBuffer tuples
+        var trainingData: [(input: MetalBuffer, target: MetalBuffer)] = []
+        for (input, target) in zip(inputs, targets) {
+            let inputBuffer = try await metalPipeline.allocateBuffer(size: input.count)
+            let targetBuffer = try await metalPipeline.allocateBuffer(size: target.count)
+            
+            // Copy data to buffers
+            let inputPtr = inputBuffer.buffer.contents().bindMemory(to: Float.self, capacity: input.count)
+            let targetPtr = targetBuffer.buffer.contents().bindMemory(to: Float.self, capacity: target.count)
+            
+            for i in 0..<input.count {
+                inputPtr[i] = input[i]
+            }
+            for i in 0..<target.count {
+                targetPtr[i] = target[i]
+            }
+            
+            trainingData.append((input: inputBuffer, target: targetBuffer))
+        }
+        
         try await clusterNetwork?.train(
-            inputs: inputs,
-            targets: targets,
+            data: trainingData,
             config: clusterConfig
         )
         
@@ -156,62 +182,65 @@ public actor NeuralClustering {
         let dimensions = configuration.dimensions
         let numClusters = configuration.numberOfClusters
         
-        // Cluster assignment network - using existing layer implementations
-        let clusterLayers: [any NeuralLayer] = [
-            DenseLayer(
-                inputSize: dimensions,
-                outputSize: dimensions * 2,
-                activation: .relu,
-                useBias: true
-            ),
-            DropoutLayer(rate: 0.2),
-            DenseLayer(
-                inputSize: dimensions * 2,
-                outputSize: dimensions,
-                activation: .relu,
-                useBias: true
-            ),
-            DenseLayer(
-                inputSize: dimensions,
-                outputSize: numClusters,
-                activation: .softmax,
-                useBias: true
-            )
-        ]
+        // Initialize cluster assignment network
+        self.clusterNetwork = try await NeuralNetwork(metalPipeline: metalPipeline)
         
-        self.clusterNetwork = NeuralNetwork(
-            layers: clusterLayers,
-            optimizer: Adam(learningRate: configuration.learningRate)
-        )
+        // Add layers to cluster network
+        await clusterNetwork?.addLayer(try await DenseLayer(
+            inputSize: dimensions,
+            outputSize: dimensions * 2,
+            activation: .relu,
+            metalPipeline: metalPipeline
+        ))
+        
+        await clusterNetwork?.addLayer(try await DropoutLayer(
+            rate: 0.2,
+            metalPipeline: metalPipeline
+        ))
+        
+        await clusterNetwork?.addLayer(try await DenseLayer(
+            inputSize: dimensions * 2,
+            outputSize: dimensions,
+            activation: .relu,
+            metalPipeline: metalPipeline
+        ))
+        
+        await clusterNetwork?.addLayer(try await DenseLayer(
+            inputSize: dimensions,
+            outputSize: numClusters,
+            activation: .softmax,
+            metalPipeline: metalPipeline
+        ))
         
         // Probe prediction network (if enabled)
         if configuration.adaptiveProbing {
-            let probeLayers: [any NeuralLayer] = [
-                DenseLayer(
-                    inputSize: dimensions + 1, // +1 for target recall
-                    outputSize: 64,
-                    activation: .relu,
-                    useBias: true
-                ),
-                DropoutLayer(rate: 0.1),
-                DenseLayer(
-                    inputSize: 64,
-                    outputSize: 32,
-                    activation: .relu,
-                    useBias: true
-                ),
-                DenseLayer(
-                    inputSize: 32,
-                    outputSize: 1,
-                    activation: .linear, // Regression output
-                    useBias: true
-                )
-            ]
+            self.probeNetwork = try await NeuralNetwork(metalPipeline: metalPipeline)
             
-            self.probeNetwork = NeuralNetwork(
-                layers: probeLayers,
-                optimizer: Adam(learningRate: configuration.learningRate)
-            )
+            await probeNetwork?.addLayer(try await DenseLayer(
+                inputSize: dimensions + 1, // +1 for target recall
+                outputSize: 64,
+                activation: .relu,
+                metalPipeline: metalPipeline
+            ))
+            
+            await probeNetwork?.addLayer(try await DropoutLayer(
+                rate: 0.1,
+                metalPipeline: metalPipeline
+            ))
+            
+            await probeNetwork?.addLayer(try await DenseLayer(
+                inputSize: 64,
+                outputSize: 32,
+                activation: .relu,
+                metalPipeline: metalPipeline
+            ))
+            
+            await probeNetwork?.addLayer(try await DenseLayer(
+                inputSize: 32,
+                outputSize: 1,
+                activation: .linear, // Regression output
+                metalPipeline: metalPipeline
+            ))
         }
     }
     
@@ -351,9 +380,28 @@ public actor NeuralClustering {
             earlyStoppingPatience: 5
         )
         
+        // Convert inputs and targets to MetalBuffer tuples
+        var probeTrainingData: [(input: MetalBuffer, target: MetalBuffer)] = []
+        for (input, target) in zip(inputs, targets) {
+            let inputBuffer = try await metalPipeline.allocateBuffer(size: input.count)
+            let targetBuffer = try await metalPipeline.allocateBuffer(size: target.count)
+            
+            // Copy data to buffers
+            let inputPtr = inputBuffer.buffer.contents().bindMemory(to: Float.self, capacity: input.count)
+            let targetPtr = targetBuffer.buffer.contents().bindMemory(to: Float.self, capacity: target.count)
+            
+            for i in 0..<input.count {
+                inputPtr[i] = input[i]
+            }
+            for i in 0..<target.count {
+                targetPtr[i] = target[i]
+            }
+            
+            probeTrainingData.append((input: inputBuffer, target: targetBuffer))
+        }
+        
         try await probeNetwork?.train(
-            inputs: inputs,
-            targets: targets,
+            data: probeTrainingData,
             config: probeConfig
         )
     }
@@ -402,9 +450,28 @@ public actor NeuralClustering {
             lossFunction: .crossEntropy
         )
         
+        // Convert inputs and targets to MetalBuffer tuples
+        var adaptTrainingData: [(input: MetalBuffer, target: MetalBuffer)] = []
+        for (input, target) in zip(inputs, targets) {
+            let inputBuffer = try await metalPipeline.allocateBuffer(size: input.count)
+            let targetBuffer = try await metalPipeline.allocateBuffer(size: target.count)
+            
+            // Copy data to buffers
+            let inputPtr = inputBuffer.buffer.contents().bindMemory(to: Float.self, capacity: input.count)
+            let targetPtr = targetBuffer.buffer.contents().bindMemory(to: Float.self, capacity: target.count)
+            
+            for i in 0..<input.count {
+                inputPtr[i] = input[i]
+            }
+            for i in 0..<target.count {
+                targetPtr[i] = target[i]
+            }
+            
+            adaptTrainingData.append((input: inputBuffer, target: targetBuffer))
+        }
+        
         try await clusterNetwork?.train(
-            inputs: inputs,
-            targets: targets,
+            data: adaptTrainingData,
             config: adaptConfig
         )
         
@@ -425,8 +492,9 @@ public actor NeuralClustering {
         // Track cluster utilization and analyze result patterns
         for (query, queryResults) in zip(queries, results) {
             // Track cluster probabilities
-            let probTask = Task {
-                try await getClusterProbabilities(for: query)
+            let probTask = Task { [weak self] in
+                guard let self else { return nil as [Float]? }
+                return try await self.getClusterProbabilities(for: query)
             }
             if let probabilities = try? await probTask.value {
                 performanceMetrics.updateClusterUtilization(probabilities)
@@ -564,6 +632,7 @@ public enum NeuralClusteringError: LocalizedError {
     case notTrained
     case invalidConfiguration(String)
     case trainingFailed(String)
+    case metalNotAvailable
     
     public var errorDescription: String? {
         switch self {
@@ -573,6 +642,8 @@ public enum NeuralClusteringError: LocalizedError {
             return "Invalid configuration: \(message)"
         case .trainingFailed(let message):
             return "Training failed: \(message)"
+        case .metalNotAvailable:
+            return "Metal is not available on this device"
         }
     }
 }

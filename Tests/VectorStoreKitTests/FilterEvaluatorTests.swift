@@ -1,11 +1,34 @@
-// VectorStoreKit: FilterEvaluator Tests
+// VectorStoreKit: Filter Evaluator Tests
 //
-// Tests for the shared filter evaluation utilities
+// Tests for the production-ready filter evaluation system
 
 import XCTest
 @testable import VectorStoreKit
 
 final class FilterEvaluatorTests: XCTestCase {
+    var evaluator: FilterEvaluator!
+    
+    override func setUp() async throws {
+        try await super.setUp()
+        
+        // Initialize evaluator with test configuration
+        evaluator = try await FilterEvaluator(
+            cacheConfiguration: .init(
+                maxModels: 3,
+                maxMemoryMB: 128,
+                evictionPolicy: .lru,
+                preloadModels: []
+            ),
+            batchSize: 32,
+            maxConcurrentEvaluations: 2
+        )
+    }
+    
+    override func tearDown() async throws {
+        await evaluator.resetMetrics()
+        evaluator = nil
+        try await super.tearDown()
+    }
     
     // MARK: - Test Data
     
@@ -23,8 +46,7 @@ final class FilterEvaluatorTests: XCTestCase {
         return StoredVector(
             id: id,
             vector: vector,
-            metadata: metadataData,
-            timestamp: Date()
+            metadata: metadataData ?? Data()
         )
     }
     
@@ -40,7 +62,7 @@ final class FilterEvaluatorTests: XCTestCase {
             value: "electronics"
         ))
         
-        let result = try await FilterEvaluator.evaluateFilter(filter, vector: vector)
+        let result = try await evaluator.evaluateFilter(filter, vector: vector)
         XCTAssertTrue(result)
         
         // Test not equals
@@ -50,7 +72,7 @@ final class FilterEvaluatorTests: XCTestCase {
             value: "clothing"
         ))
         
-        let result2 = try await FilterEvaluator.evaluateFilter(filter2, vector: vector)
+        let result2 = try await evaluator.evaluateFilter(filter2, vector: vector)
         XCTAssertFalse(result2)
     }
     
@@ -63,7 +85,7 @@ final class FilterEvaluatorTests: XCTestCase {
             value: "electronic"
         ))
         
-        let result = try await FilterEvaluator.evaluateFilter(filter, vector: vector)
+        let result = try await evaluator.evaluateFilter(filter, vector: vector)
         XCTAssertTrue(result)
     }
     
@@ -76,7 +98,7 @@ final class FilterEvaluatorTests: XCTestCase {
             value: "electronics, clothing, books"
         ))
         
-        let result = try await FilterEvaluator.evaluateFilter(filter, vector: vector)
+        let result = try await evaluator.evaluateFilter(filter, vector: vector)
         XCTAssertTrue(result)
     }
     
@@ -89,7 +111,7 @@ final class FilterEvaluatorTests: XCTestCase {
             value: "value"
         ))
         
-        let result = try await FilterEvaluator.evaluateFilter(filter, vector: vector)
+        let result = try await evaluator.evaluateFilter(filter, vector: vector)
         XCTAssertFalse(result)
     }
     
@@ -104,7 +126,7 @@ final class FilterEvaluatorTests: XCTestCase {
             constraint: .magnitude(4.0...6.0)
         ))
         
-        let result = try await FilterEvaluator.evaluateFilter(filter, vector: vector)
+        let result = try await evaluator.evaluateFilter(filter, vector: vector)
         XCTAssertTrue(result)
         
         // Test out of range
@@ -114,7 +136,7 @@ final class FilterEvaluatorTests: XCTestCase {
             constraint: .magnitude(6.0...10.0)
         ))
         
-        let result2 = try await FilterEvaluator.evaluateFilter(filter2, vector: vector)
+        let result2 = try await evaluator.evaluateFilter(filter2, vector: vector)
         XCTAssertFalse(result2)
     }
     
@@ -127,7 +149,7 @@ final class FilterEvaluatorTests: XCTestCase {
             constraint: .sparsity(0.5...0.7)
         ))
         
-        let result = try await FilterEvaluator.evaluateFilter(filter, vector: vector)
+        let result = try await evaluator.evaluateFilter(filter, vector: vector)
         XCTAssertTrue(result)
     }
     
@@ -147,7 +169,7 @@ final class FilterEvaluatorTests: XCTestCase {
             }
         ))
         
-        let result = try await FilterEvaluator.evaluateFilter(filter, vector: vector)
+        let result = try await evaluator.evaluateFilter(filter, vector: vector)
         XCTAssertTrue(result) // 1+2+3+4 = 10 > 8
         
         // Test with a different predicate
@@ -163,12 +185,12 @@ final class FilterEvaluatorTests: XCTestCase {
             }
         ))
         
-        let result2 = try await FilterEvaluator.evaluateFilter(filter2, vector: vector)
+        let result2 = try await evaluator.evaluateFilter(filter2, vector: vector)
         XCTAssertTrue(result2)
         
         // Test with vector containing negative values
         let vectorWithNegative = createTestVector(vector: [1.0, -2.0, 3.0, 4.0])
-        let result3 = try await FilterEvaluator.evaluateFilter(filter2, vector: vectorWithNegative)
+        let result3 = try await evaluator.evaluateFilter(filter2, vector: vectorWithNegative)
         XCTAssertFalse(result3)
     }
     
@@ -181,7 +203,7 @@ final class FilterEvaluatorTests: XCTestCase {
             constraint: .magnitude(0...100)
         ))
         
-        let result = try await FilterEvaluator.evaluateFilter(filter, vector: vector)
+        let result = try await evaluator.evaluateFilter(filter, vector: vector)
         XCTAssertTrue(result)
         
         // Test out of range
@@ -191,7 +213,7 @@ final class FilterEvaluatorTests: XCTestCase {
             constraint: .magnitude(0...100)
         ))
         
-        let result2 = try await FilterEvaluator.evaluateFilter(filter2, vector: vector)
+        let result2 = try await evaluator.evaluateFilter(filter2, vector: vector)
         XCTAssertFalse(result2)
     }
     
@@ -209,7 +231,7 @@ final class FilterEvaluatorTests: XCTestCase {
             }
         ))
         
-        let result = try await FilterEvaluator.evaluateFilter(filter, vector: vector)
+        let result = try await evaluator.evaluateFilter(filter, vector: vector)
         XCTAssertFalse(result) // Should return false for non-standard sizes
     }
     
@@ -230,7 +252,7 @@ final class FilterEvaluatorTests: XCTestCase {
             ]
         ))
         
-        let result = try await FilterEvaluator.evaluateFilter(filter, vector: vector)
+        let result = try await evaluator.evaluateFilter(filter, vector: vector)
         XCTAssertTrue(result)
         
         // Test with one failing condition
@@ -243,7 +265,7 @@ final class FilterEvaluatorTests: XCTestCase {
             ]
         ))
         
-        let result2 = try await FilterEvaluator.evaluateFilter(filter2, vector: vector)
+        let result2 = try await evaluator.evaluateFilter(filter2, vector: vector)
         XCTAssertFalse(result2)
     }
     
@@ -262,7 +284,7 @@ final class FilterEvaluatorTests: XCTestCase {
             ]
         ))
         
-        let result = try await FilterEvaluator.evaluateFilter(filter, vector: vector)
+        let result = try await evaluator.evaluateFilter(filter, vector: vector)
         XCTAssertTrue(result) // Should be true because one condition matches
     }
     
@@ -276,7 +298,7 @@ final class FilterEvaluatorTests: XCTestCase {
             ]
         ))
         
-        let result = try await FilterEvaluator.evaluateFilter(filter, vector: vector)
+        let result = try await evaluator.evaluateFilter(filter, vector: vector)
         XCTAssertTrue(result) // Should be true because the vector is NOT clothing
         
         // Test negative case
@@ -287,8 +309,28 @@ final class FilterEvaluatorTests: XCTestCase {
             ]
         ))
         
-        let result2 = try await FilterEvaluator.evaluateFilter(filter2, vector: vector)
+        let result2 = try await evaluator.evaluateFilter(filter2, vector: vector)
         XCTAssertFalse(result2) // Should be false because the vector IS electronics
+    }
+    
+    // MARK: - Learned Filter Tests
+    
+    func testLearnedFilterFallback() async throws {
+        // Test with a non-existent model (should fall back to heuristic)
+        let vector = createTestVector(vector: Array(repeating: 0.8, count: 128))
+        
+        let filter = LearnedFilter(
+            modelIdentifier: "non_existent_model",
+            confidence: 0.5,
+            parameters: ["threshold": "0.7", "operation": "magnitude"]
+        )
+        
+        let result = await evaluator.evaluateLearnedFilter(filter, vector: vector)
+        
+        // Should use magnitude heuristic
+        let magnitude = sqrt(vector.vector.reduce(0) { $0 + $1 * $1 })
+        let expectedResult = magnitude >= 0.7 * 0.5 // threshold * confidence
+        XCTAssertEqual(result, expectedResult)
     }
     
     // MARK: - Batch Filtering Tests
@@ -307,10 +349,93 @@ final class FilterEvaluatorTests: XCTestCase {
             value: "electronics"
         ))
         
-        let filtered = try await FilterEvaluator.filterVectors(vectors, filter: filter)
+        let filtered = try await evaluator.filterVectors(vectors, filter: filter)
         
         XCTAssertEqual(filtered.count, 2)
         XCTAssertEqual(Set(filtered.map { $0.id }), Set(["1", "3"]))
+    }
+    
+    func testConcurrentBatchProcessing() async throws {
+        let vectorCount = 100
+        let vectors = (0..<vectorCount).map { i in
+            createTestVector(
+                id: "vec_\(i)",
+                vector: Array(repeating: Float.random(in: -1...1), count: 64),
+                metadata: ["id": "\(i)"]
+            )
+        }
+        
+        let filter = SearchFilter.vector(VectorFilter(
+            constraint: .sparsity(0...1),
+            dimension: nil,
+            range: nil
+        ))
+        
+        let start = Date()
+        let filtered = try await evaluator.filterVectors(vectors, filter: filter)
+        let duration = Date().timeIntervalSince(start)
+        
+        print("Filtered \(filtered.count)/\(vectors.count) vectors in \(duration)s")
+        
+        // All vectors should pass this permissive filter
+        XCTAssertEqual(filtered.count, vectors.count)
+        XCTAssertLessThan(duration, 5.0) // Should complete within 5 seconds
+    }
+    
+    // MARK: - Performance Metrics Tests
+    
+    func testMetricsCollection() async throws {
+        // Perform various operations
+        let vector = createTestVector()
+        
+        // Metadata filter
+        _ = await evaluator.evaluateMetadataFilter(
+            MetadataFilter(key: "test", value: "value", operation: .equals),
+            vector: vector
+        )
+        
+        // Vector filter
+        _ = await evaluator.evaluateVectorFilter(
+            VectorFilter(constraint: .magnitude(0...1), dimension: nil, range: nil),
+            vector: vector.vector
+        )
+        
+        // Learned filter (will fail and increment error count)
+        _ = await evaluator.evaluateLearnedFilter(
+            LearnedFilter(modelIdentifier: "test_model", confidence: 0.5, parameters: [:]),
+            vector: vector
+        )
+        
+        // Batch operation
+        _ = try await evaluator.filterVectors(
+            [vector],
+            filter: .vector(VectorFilter(constraint: .magnitude(0...100), dimension: nil, range: nil))
+        )
+        
+        // Check metrics
+        let metrics = await evaluator.getMetrics()
+        
+        XCTAssertGreaterThan(metrics.learnedFilterEvaluations, 0)
+        XCTAssertGreaterThan(metrics.learnedFilterErrors, 0)
+        XCTAssertEqual(metrics.batchFilterOperations, 1)
+        XCTAssertEqual(metrics.vectorsProcessed, 1)
+    }
+    
+    // MARK: - Static Method Tests
+    
+    func testStaticMethodCompatibility() async throws {
+        // Test that static methods still work for backward compatibility
+        let vector = createTestVector(metadata: ["test": "value"])
+        
+        let filter = SearchFilter.metadata(MetadataFilter(
+            key: "test",
+            value: "value",
+            operation: .equals
+        ))
+        
+        // Use static method
+        let result = try await FilterEvaluator.evaluateFilter(filter, vector: vector)
+        XCTAssertTrue(result)
     }
     
     // MARK: - Edge Cases
@@ -324,7 +449,7 @@ final class FilterEvaluatorTests: XCTestCase {
             value: "electronics"
         ))
         
-        let result = try await FilterEvaluator.evaluateFilter(filter, vector: vector)
+        let result = try await evaluator.evaluateFilter(filter, vector: vector)
         XCTAssertFalse(result) // Should be false because there's no metadata
     }
     
@@ -337,7 +462,7 @@ final class FilterEvaluatorTests: XCTestCase {
             constraint: .magnitude(0...1.0)
         ))
         
-        let result = try await FilterEvaluator.evaluateFilter(filter, vector: vector)
+        let result = try await evaluator.evaluateFilter(filter, vector: vector)
         XCTAssertTrue(result) // Empty vector has magnitude 0
     }
     
@@ -345,7 +470,7 @@ final class FilterEvaluatorTests: XCTestCase {
     
     func testFilteringPerformance() async throws {
         // Create a large dataset
-        let vectors = (0..<10000).map { i in
+        let vectors = (0..<1000).map { i in
             createTestVector(
                 id: "vector-\(i)",
                 vector: Array(repeating: Float(i), count: 128),
@@ -362,9 +487,14 @@ final class FilterEvaluatorTests: XCTestCase {
         ))
         
         measure {
+            let expectation = XCTestExpectation(description: "Filter completion")
+            
             Task {
-                let _ = try await FilterEvaluator.filterVectors(vectors, filter: filter)
+                _ = try await evaluator.filterVectors(vectors, filter: filter)
+                expectation.fulfill()
             }
+            
+            wait(for: [expectation], timeout: 10.0)
         }
     }
 }

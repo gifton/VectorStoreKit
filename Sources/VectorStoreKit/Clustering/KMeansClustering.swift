@@ -263,8 +263,8 @@ public actor KMeansClustering {
         vectors: [[Float]],
         centroids: [[Float]]
     ) async throws -> (assignments: [Int], distances: [Float]) {
-        // Metal acceleration temporarily disabled due to API mismatch
-        // TODO: Update to use batch distance computation when available
+        // For now, use CPU computation for array-based vectors
+        // TODO: Add support for converting arrays to SIMD vectors when dimensions match
         return assignWithCPU(vectors: vectors, centroids: centroids)
     }
     
@@ -432,7 +432,7 @@ public actor KMeansClustering {
         return indices.map { vectors[$0] }
     }
     
-    private func weightedSample(probabilities: [Float], using rng: inout some RandomNumberGenerator) -> Int {
+    private func weightedSample<T>(probabilities: [Float], using rng: inout T) -> Int where T: Swift.RandomNumberGenerator {
         let random = Float.random(in: 0..<1, using: &rng)
         var cumulative: Float = 0
         
@@ -477,7 +477,7 @@ public enum ClusteringError: LocalizedError {
 }
 
 // Simple seedable RNG for reproducibility
-private struct SeedableRNG: RandomNumberGenerator {
+private struct SeedableRNG: Swift.RandomNumberGenerator {
     private var state: UInt64
     
     init(seed: UInt64) {
@@ -490,7 +490,7 @@ private struct SeedableRNG: RandomNumberGenerator {
     }
 }
 
-private struct SystemRNG: RandomNumberGenerator {
+private struct SystemRNG: Swift.RandomNumberGenerator {
     mutating func next() -> UInt64 {
         return UInt64.random(in: UInt64.min...UInt64.max)
     }

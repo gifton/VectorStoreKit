@@ -3,6 +3,7 @@
 // Sparse autoencoder with sparsity constraints on hidden activations
 
 import Foundation
+@preconcurrency import Metal
 
 /// Configuration for sparse autoencoder
 public struct SparseAutoencoderConfiguration: AutoencoderConfiguration {
@@ -12,7 +13,7 @@ public struct SparseAutoencoderConfiguration: AutoencoderConfiguration {
     public let decoderLayers: [Int]
     public let sparsityTarget: Float
     public let sparsityWeight: Float
-    public let training: TrainingConfiguration
+    public let training: AutoencoderTrainingConfiguration
     public let regularization: RegularizationConfig
     
     public init(
@@ -22,7 +23,7 @@ public struct SparseAutoencoderConfiguration: AutoencoderConfiguration {
         decoderLayers: [Int] = [256, 512],
         sparsityTarget: Float = 0.05,
         sparsityWeight: Float = 1.0,
-        training: TrainingConfiguration = TrainingConfiguration(),
+        training: AutoencoderTrainingConfiguration = AutoencoderTrainingConfiguration(),
         regularization: RegularizationConfig = RegularizationConfig()
     ) {
         self.inputDimensions = inputDimensions
@@ -47,7 +48,7 @@ public actor SparseAutoencoder: Autoencoder {
     private let decoder: NeuralNetwork
     private var trained: Bool = false
     private var trainingHistory: TrainingHistory
-    private let metalCompute: MetalCompute?
+    private let metalPipeline: MetalMLPipeline?
     
     // Track average activations for sparsity
     private var averageActivations: [Float] = []
@@ -61,10 +62,10 @@ public actor SparseAutoencoder: Autoencoder {
     
     public init(
         configuration: SparseAutoencoderConfiguration,
-        metalCompute: MetalCompute? = nil
-    ) async {
+        metalPipeline: MetalMLPipeline? = nil
+    ) async throws {
         self.configuration = configuration
-        self.metalCompute = metalCompute
+        self.metalPipeline = metalPipeline
         self.trainingHistory = TrainingHistory()
         
         // Initialize average activations
@@ -73,27 +74,38 @@ public actor SparseAutoencoder: Autoencoder {
             count: configuration.encodedDimensions
         )
         
+        // Create metalPipeline if not provided
+        let pipeline: MetalMLPipeline
+        if let metalPipeline = metalPipeline {
+            pipeline = metalPipeline
+        } else {
+            guard let device = MTLCreateSystemDefaultDevice() else {
+                throw MetalMLError.commandQueueCreationFailed
+            }
+            pipeline = try await MetalMLPipeline(device: device)
+        }
+        
         // Build encoder network
         var encoderLayers: [any NeuralLayer] = []
         var currentInput = configuration.inputDimensions
         
         // Hidden layers
         for hiddenSize in configuration.encoderLayers {
-            encoderLayers.append(DenseLayer(
+            encoderLayers.append(try await DenseLayer(
                 inputSize: currentInput,
                 outputSize: hiddenSize,
                 activation: .relu,
-                metalCompute: metalCompute
+                metalPipeline: pipeline
             ))
             currentInput = hiddenSize
         }
         
         // Output layer with sigmoid activation to encourage sparsity
-        encoderLayers.append(DenseLayer(
+        encoderLayers.append(try await DenseLayer(
             inputSize: currentInput,
             outputSize: configuration.encodedDimensions,
             activation: .sigmoid,
-            metalCompute: metalCompute
+            metalPipeline: pipeline
         ))
         
         // Build decoder network
@@ -102,26 +114,29 @@ public actor SparseAutoencoder: Autoencoder {
         
         // Hidden layers
         for hiddenSize in configuration.decoderLayers {
-            decoderLayers.append(DenseLayer(
+            decoderLayers.append(try await DenseLayer(
                 inputSize: currentInput,
                 outputSize: hiddenSize,
                 activation: .relu,
-                metalCompute: metalCompute
+                metalPipeline: pipeline
             ))
             currentInput = hiddenSize
         }
         
         // Output layer
-        decoderLayers.append(DenseLayer(
+        decoderLayers.append(try await DenseLayer(
             inputSize: currentInput,
             outputSize: configuration.inputDimensions,
             activation: .sigmoid,
-            metalCompute: metalCompute
+            metalPipeline: pipeline
         ))
         
         // Initialize networks
-        self.encoder = await NeuralNetwork(layers: encoderLayers)
-        self.decoder = await NeuralNetwork(layers: decoderLayers)
+        self.encoder = try await NeuralNetwork(metalPipeline: pipeline)
+        await self.encoder.addLayers(encoderLayers)
+        
+        self.decoder = try await NeuralNetwork(metalPipeline: pipeline)
+        await self.decoder.addLayers(decoderLayers)
     }
     
     // MARK: - Encoding/Decoding
@@ -431,36 +446,31 @@ public actor SparseAutoencoder: Autoencoder {
     }
     
     private func addGradients(_ g1: LayerGradients, _ g2: LayerGradients) -> LayerGradients {
-        var result = LayerGradients()
-        
-        if let w1 = g1.weights, let w2 = g2.weights {
-            result.weights = zip(w1, w2).map { $0 + $1 }
+        let addedWeights: [Float]? = if let w1 = g1.weights, let w2 = g2.weights {
+            zip(w1, w2).map { $0 + $1 }
+        } else {
+            nil
         }
         
-        if let b1 = g1.bias, let b2 = g2.bias {
-            result.bias = zip(b1, b2).map { $0 + $1 }
+        let addedBias: [Float]? = if let b1 = g1.bias, let b2 = g2.bias {
+            zip(b1, b2).map { $0 + $1 }
+        } else {
+            nil
         }
         
-        return result
+        return LayerGradients(weights: addedWeights, bias: addedBias)
     }
     
     private func scaleGradients(_ gradients: LayerGradients, by scale: Float) -> LayerGradients {
-        var result = LayerGradients()
+        let scaledWeights = gradients.weights?.map { $0 * scale }
+        let scaledBias = gradients.bias?.map { $0 * scale }
         
-        if let weights = gradients.weights {
-            result.weights = weights.map { $0 * scale }
-        }
-        
-        if let bias = gradients.bias {
-            result.bias = bias.map { $0 * scale }
-        }
-        
-        return result
+        return LayerGradients(weights: scaledWeights, bias: scaledBias)
     }
     
     private func applyGradients(_ gradients: [LayerGradients], optimizer: any Optimizer) async {
         // Apply gradients to encoder and decoder
-        let encoderGradCount = await encoder.layers.count
+        let encoderGradCount = await encoder.layerCount
         let encoderGrads = Array(gradients.prefix(encoderGradCount))
         let decoderGrads = Array(gradients.suffix(from: encoderGradCount))
         
@@ -470,7 +480,7 @@ public actor SparseAutoencoder: Autoencoder {
     
     private func updateLearningRate(
         optimizer: any Optimizer,
-        schedule: TrainingConfiguration.LearningRateSchedule,
+        schedule: AutoencoderTrainingConfiguration.LearningRateSchedule,
         epoch: Int,
         step: Int
     ) async {

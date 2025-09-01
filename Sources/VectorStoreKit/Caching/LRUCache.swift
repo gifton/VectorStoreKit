@@ -43,12 +43,14 @@ public actor BasicLRUVectorCache<Vector: SIMD & Sendable>: VectorCache where Vec
     private var totalAccessTime: TimeInterval = 0
     
     // Access history for pattern analysis
-    private var accessHistory: [VectorID] = []
-    private let maxHistorySize = 1000
+    private var accessHistory: CacheAccessRingBuffer = CacheAccessRingBuffer(capacity: 1000)
     
     // Performance analyzer
     private let performanceAnalyzer = CachePerformanceAnalyzer<Vector>()
     private let enhancedAnalyzer = EnhancedCachePerformanceAnalyzer<Vector>()
+    
+    // Metrics collector
+    private let metricsCollector: CacheMetricsCollector
     
     // Predictive prefetch engine
     private let prefetchEngine = PredictivePrefetchEngine<Vector>()
@@ -56,12 +58,17 @@ public actor BasicLRUVectorCache<Vector: SIMD & Sendable>: VectorCache where Vec
     // Storage backend for preloading
     private let storageBackend: (any CacheStorageBackend<Vector>)?
     
-    public init(maxMemory: Int, storageBackend: (any CacheStorageBackend<Vector>)? = nil) throws {
+    public init(
+        maxMemory: Int,
+        storageBackend: (any CacheStorageBackend<Vector>)? = nil,
+        metricsConfig: CacheMetricsConfig = .production
+    ) throws {
         guard maxMemory > 0 else {
             throw VectorCacheError.invalidConfiguration("maxMemory must be positive")
         }
         self.configuration = LRUCacheConfiguration(maxMemory: maxMemory)
         self.storageBackend = storageBackend
+        self.metricsCollector = CacheMetricsCollector(config: metricsConfig, category: "LRUCache")
     }
     
     // MARK: - Core Properties
@@ -77,30 +84,43 @@ public actor BasicLRUVectorCache<Vector: SIMD & Sendable>: VectorCache where Vec
     // MARK: - Core Operations
     
     public func get(id: VectorID) async -> Vector? {
-        let startTime = Date()
+        let startTime = ContinuousClock.now
+        let latency: Duration
         defer {
-            let latency = Date().timeIntervalSince(startTime)
-            totalAccessTime += latency
+            let latencySeconds = Double(latency.components.seconds) + Double(latency.components.attoseconds) / 1e18
+            totalAccessTime += latencySeconds
             recordAccess(id: id)
-            Task {
-                await prefetchEngine.recordAccess(id: id)
-                await enhancedAnalyzer.recordAccessLatency(latency)
-            }
         }
         
         if let node = cache[id] {
             hitCount += 1
             // Move to front (most recently used)
             moveToFront(node)
-            Task {
-                await enhancedAnalyzer.recordAccess(hit: true)
-            }
+            
+            latency = ContinuousClock.now - startTime
+            
+            // Record metrics synchronously - collectors handle batching internally
+            await prefetchEngine.recordAccess(id: id)
+            await enhancedAnalyzer.recordAccess(hit: true)
+            let latencySeconds = Double(latency.components.seconds) + Double(latency.components.attoseconds) / 1e18
+            await enhancedAnalyzer.recordAccessLatency(latencySeconds)
+            await metricsCollector.recordAccess(hit: true)
+            await metricsCollector.recordLatency(latencySeconds)
+            
             return node.entry.vector
         } else {
             missCount += 1
-            Task {
-                await enhancedAnalyzer.recordAccess(hit: false)
-            }
+            
+            latency = ContinuousClock.now - startTime
+            
+            // Record metrics synchronously - collectors handle batching internally
+            await prefetchEngine.recordAccess(id: id)
+            await enhancedAnalyzer.recordAccess(hit: false)
+            let latencySeconds = Double(latency.components.seconds) + Double(latency.components.attoseconds) / 1e18
+            await enhancedAnalyzer.recordAccessLatency(latencySeconds)
+            await metricsCollector.recordAccess(hit: false)
+            await metricsCollector.recordLatency(latencySeconds)
+            
             return nil
         }
     }
@@ -154,11 +174,15 @@ public actor BasicLRUVectorCache<Vector: SIMD & Sendable>: VectorCache where Vec
         head = nil
         tail = nil
         currentMemoryUsage = 0
-        accessHistory.removeAll()
+        accessHistory.clear()
     }
     
     public func contains(id: VectorID) async -> Bool {
         cache[id] != nil
+    }
+    
+    public func currentSize() async -> Int {
+        cache.count
     }
     
     // MARK: - Advanced Operations (Medium Complexity)
@@ -198,7 +222,7 @@ public actor BasicLRUVectorCache<Vector: SIMD & Sendable>: VectorCache where Vec
                 // Insert if space available
                 if currentMemoryUsage + entrySize <= configuration.maxMemory {
                     let entry = CacheEntry(vector: vector, priority: priority)
-                    let node = LRUNode(id: id, entry: entry)
+                    let node = LRUNode<Vector>(id: id, entry: entry)
                     cache[id] = node
                     currentMemoryUsage += entrySize
                     addToFront(node)
@@ -216,7 +240,7 @@ public actor BasicLRUVectorCache<Vector: SIMD & Sendable>: VectorCache where Vec
         guard let storage = storageBackend else { return }
         
         // Get enhanced predictions from the prefetch engine
-        let currentId = accessHistory.last
+        let currentId = accessHistory.mostRecent(1).first
         let enhancedPredictions = await prefetchEngine.generatePredictions(
             currentId: currentId ?? "",
             predictions: predictions
@@ -282,7 +306,7 @@ public actor BasicLRUVectorCache<Vector: SIMD & Sendable>: VectorCache where Vec
                     )
                 )
                 
-                let node = LRUNode(id: id, entry: entry)
+                let node = LRUNode<Vector>(id: id, entry: entry)
                 cache[id] = node
                 currentMemoryUsage += entrySize
                 
@@ -312,10 +336,7 @@ public actor BasicLRUVectorCache<Vector: SIMD & Sendable>: VectorCache where Vec
             }
         }
         
-        // Compact access history
-        if accessHistory.count > maxHistorySize {
-            accessHistory = Array(accessHistory.suffix(maxHistorySize / 2))
-        }
+        // Access history is automatically managed by ring buffer
         
         // Update performance metrics
         await performanceAnalyzer.recordMemoryUsage(currentMemoryUsage)
@@ -436,6 +457,11 @@ public actor BasicLRUVectorCache<Vector: SIMD & Sendable>: VectorCache where Vec
         
         node.prev = nil
         node.next = nil
+        
+        #if DEBUG
+        // Verify node is properly unlinked
+        assert(node.prev == nil && node.next == nil, "LRU node retain cycle detected!")
+        #endif
     }
     
     private func evictLeastRecentlyUsed() async {
@@ -459,35 +485,29 @@ public actor BasicLRUVectorCache<Vector: SIMD & Sendable>: VectorCache where Vec
         await remove(id: nodeToEvict.id)
         evictionCount += 1
         await performanceAnalyzer.recordEviction(count: 1)
+        await metricsCollector.recordEviction(count: 1)
     }
     
     private func recordAccess(id: VectorID) {
-        accessHistory.append(id)
-        if accessHistory.count > maxHistorySize {
-            accessHistory.removeFirst()
-        }
+        accessHistory.recordAccess(id)
     }
     
     private func analyzeAccessPatterns() -> SimpleCacheAccessPattern {
-        // Analyze access frequency
-        var accessCounts: [VectorID: Int] = [:]
-        for id in accessHistory {
-            accessCounts[id, default: 0] += 1
-        }
+        let summary = accessHistory.analyzePatterns()
         
-        let avgAccessCount = Float(accessHistory.count) / Float(max(accessCounts.count, 1))
+        let avgAccessCount = Float(summary.totalAccesses) / Float(max(summary.uniqueCount, 1))
         let frequentThreshold = avgAccessCount * 2
         let rareThreshold = avgAccessCount * 0.5
         
-        let frequentlyAccessed = Set(accessCounts.compactMap { 
+        let frequentlyAccessed = Set(summary.accessFrequency.compactMap { 
             Float($0.value) > frequentThreshold ? $0.key : nil 
         })
-        let rarelyAccessed = Set(accessCounts.compactMap { 
+        let rarelyAccessed = Set(summary.accessFrequency.compactMap { 
             Float($0.value) < rareThreshold ? $0.key : nil 
         })
         
         // Calculate temporal locality
-        let temporalLocality = calculateTemporalLocality(accessHistory: accessHistory)
+        let temporalLocality = calculateTemporalLocality(accessHistory: accessHistory.recentAccesses)
         
         return SimpleCacheAccessPattern(
             frequentlyAccessed: frequentlyAccessed,

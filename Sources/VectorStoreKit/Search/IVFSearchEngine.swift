@@ -389,7 +389,7 @@ where Vector.Scalar: BinaryFloatingPoint {
                 id: candidate.vector.id,
                 distance: candidate.distance,
                 metadata: metadata,
-                tier: .hot,
+                tier: .memory,
                 similarityAnalysis: similarityAnalysis,
                 provenance: provenance,
                 confidence: candidate.distance
@@ -454,35 +454,14 @@ where Vector.Scalar: BinaryFloatingPoint {
         query: [Float],
         centroids: [[Float]]
     ) async throws -> [(index: Int, distance: Float)] {
-        if metalCompute != nil {
-            // Use GPU acceleration with proper dimension handling
-            guard !centroids.isEmpty else {
-                return []
-            }
-            
-            let _ = query.count // dimensions unused for now
-            
-            // MetalCompute should handle raw float arrays directly
-            // For now, we'll use CPU computation until Metal compute is properly integrated
-            // TODO: Integrate with MetalCompute's batch distance computation
-            /*
-            let result = try await metalCompute.computeBatchDistances(
-                query: query,
-                candidates: centroids,
-                metric: .euclidean
-            )
-            return result.distances.enumerated().map { ($0, $1) }
-            */
-            
-            // Fallback to CPU computation for now
-            return centroids.enumerated().map { index, centroid in
-                (index, computeDistance(query, centroid))
-            }
-        } else {
-            // CPU computation
-            return centroids.enumerated().map { index, centroid in
-                (index, computeDistance(query, centroid))
-            }
+        // Try to use SIMD optimizations if possible
+        if let simdDistances = try await computeSIMDCentroidDistances(query: query, centroids: centroids) {
+            return simdDistances
+        }
+        
+        // Fallback to standard computation
+        return centroids.enumerated().map { index, centroid in
+            (index, computeDistance(query, centroid))
         }
     }
     
@@ -830,6 +809,232 @@ private actor SearchHistory {
             recall: avgRecall,
             searchTime: avgTime
         )
+    }
+    
+    // MARK: - SIMD Optimization Methods
+    
+    private func computeSIMDCentroidDistances(
+        query: [Float],
+        centroids: [[Float]]
+    ) async throws -> [(index: Int, distance: Float)]? {
+        // Check if we can use SIMD optimizations
+        guard !centroids.isEmpty else { return nil }
+        
+        let dimension = query.count
+        
+        // Try different SIMD vector sizes based on dimension
+        if dimension == 2 {
+            return computeSIMD2Distances(query: query, centroids: centroids)
+        } else if dimension == 3 {
+            return computeSIMD3Distances(query: query, centroids: centroids)
+        } else if dimension == 4 {
+            return computeSIMD4Distances(query: query, centroids: centroids)
+        } else if dimension == 8 {
+            return computeSIMD8Distances(query: query, centroids: centroids)
+        } else if dimension == 16 {
+            return computeSIMD16Distances(query: query, centroids: centroids)
+        } else if dimension % 16 == 0 {
+            return computeSIMD16ChunkedDistances(query: query, centroids: centroids)
+        } else if dimension % 8 == 0 {
+            return computeSIMD8ChunkedDistances(query: query, centroids: centroids)
+        } else if dimension % 4 == 0 {
+            return computeSIMD4ChunkedDistances(query: query, centroids: centroids)
+        }
+        
+        return nil // No SIMD optimization available
+    }
+    
+    private func computeSIMD2Distances(query: [Float], centroids: [[Float]]) -> [(index: Int, distance: Float)] {
+        let q = SIMD2<Float>(query[0], query[1])
+        return centroids.enumerated().map { index, centroid in
+            let c = SIMD2<Float>(centroid[0], centroid[1])
+            let diff = q - c
+            return (index, sqrt((diff * diff).sum()))
+        }
+    }
+    
+    private func computeSIMD3Distances(query: [Float], centroids: [[Float]]) -> [(index: Int, distance: Float)] {
+        let q = SIMD3<Float>(query[0], query[1], query[2])
+        return centroids.enumerated().map { index, centroid in
+            let c = SIMD3<Float>(centroid[0], centroid[1], centroid[2])
+            let diff = q - c
+            return (index, sqrt((diff * diff).sum()))
+        }
+    }
+    
+    private func computeSIMD4Distances(query: [Float], centroids: [[Float]]) -> [(index: Int, distance: Float)] {
+        let q = SIMD4<Float>(query[0], query[1], query[2], query[3])
+        return centroids.enumerated().map { index, centroid in
+            let c = SIMD4<Float>(centroid[0], centroid[1], centroid[2], centroid[3])
+            let diff = q - c
+            return (index, sqrt((diff * diff).sum()))
+        }
+    }
+    
+    private func computeSIMD8Distances(query: [Float], centroids: [[Float]]) -> [(index: Int, distance: Float)] {
+        let q = SIMD8<Float>(query[0], query[1], query[2], query[3],
+                             query[4], query[5], query[6], query[7])
+        return centroids.enumerated().map { index, centroid in
+            let c = SIMD8<Float>(centroid[0], centroid[1], centroid[2], centroid[3],
+                                centroid[4], centroid[5], centroid[6], centroid[7])
+            let diff = q - c
+            return (index, sqrt((diff * diff).sum()))
+        }
+    }
+    
+    private func computeSIMD16Distances(query: [Float], centroids: [[Float]]) -> [(index: Int, distance: Float)] {
+        let q = SIMD16<Float>(
+            query[0], query[1], query[2], query[3],
+            query[4], query[5], query[6], query[7],
+            query[8], query[9], query[10], query[11],
+            query[12], query[13], query[14], query[15]
+        )
+        return centroids.enumerated().map { index, centroid in
+            let c = SIMD16<Float>(
+                centroid[0], centroid[1], centroid[2], centroid[3],
+                centroid[4], centroid[5], centroid[6], centroid[7],
+                centroid[8], centroid[9], centroid[10], centroid[11],
+                centroid[12], centroid[13], centroid[14], centroid[15]
+            )
+            let diff = q - c
+            return (index, sqrt((diff * diff).sum()))
+        }
+    }
+    
+    private func computeSIMD16ChunkedDistances(query: [Float], centroids: [[Float]]) -> [(index: Int, distance: Float)] {
+        let chunkSize = 16
+        return centroids.enumerated().map { index, centroid in
+            var totalDistance: Float = 0
+            
+            for chunkStart in stride(from: 0, to: query.count, by: chunkSize) {
+                let q = SIMD16<Float>(
+                    query[chunkStart], query[chunkStart+1], query[chunkStart+2], query[chunkStart+3],
+                    query[chunkStart+4], query[chunkStart+5], query[chunkStart+6], query[chunkStart+7],
+                    query[chunkStart+8], query[chunkStart+9], query[chunkStart+10], query[chunkStart+11],
+                    query[chunkStart+12], query[chunkStart+13], query[chunkStart+14], query[chunkStart+15]
+                )
+                let c = SIMD16<Float>(
+                    centroid[chunkStart], centroid[chunkStart+1], centroid[chunkStart+2], centroid[chunkStart+3],
+                    centroid[chunkStart+4], centroid[chunkStart+5], centroid[chunkStart+6], centroid[chunkStart+7],
+                    centroid[chunkStart+8], centroid[chunkStart+9], centroid[chunkStart+10], centroid[chunkStart+11],
+                    centroid[chunkStart+12], centroid[chunkStart+13], centroid[chunkStart+14], centroid[chunkStart+15]
+                )
+                let diff = q - c
+                totalDistance += (diff * diff).sum()
+            }
+            
+            return (index, sqrt(totalDistance))
+        }
+    }
+    
+    private func computeSIMD8ChunkedDistances(query: [Float], centroids: [[Float]]) -> [(index: Int, distance: Float)] {
+        let chunkSize = 8
+        return centroids.enumerated().map { index, centroid in
+            var totalDistance: Float = 0
+            
+            for chunkStart in stride(from: 0, to: query.count, by: chunkSize) {
+                let q = SIMD8<Float>(
+                    query[chunkStart], query[chunkStart+1], query[chunkStart+2], query[chunkStart+3],
+                    query[chunkStart+4], query[chunkStart+5], query[chunkStart+6], query[chunkStart+7]
+                )
+                let c = SIMD8<Float>(
+                    centroid[chunkStart], centroid[chunkStart+1], centroid[chunkStart+2], centroid[chunkStart+3],
+                    centroid[chunkStart+4], centroid[chunkStart+5], centroid[chunkStart+6], centroid[chunkStart+7]
+                )
+                let diff = q - c
+                totalDistance += (diff * diff).sum()
+            }
+            
+            return (index, sqrt(totalDistance))
+        }
+    }
+    
+    private func computeSIMD4ChunkedDistances(query: [Float], centroids: [[Float]]) -> [(index: Int, distance: Float)] {
+        let chunkSize = 4
+        return centroids.enumerated().map { index, centroid in
+            var totalDistance: Float = 0
+            
+            for chunkStart in stride(from: 0, to: query.count, by: chunkSize) {
+                let q = SIMD4<Float>(
+                    query[chunkStart], query[chunkStart+1], query[chunkStart+2], query[chunkStart+3]
+                )
+                let c = SIMD4<Float>(
+                    centroid[chunkStart], centroid[chunkStart+1], centroid[chunkStart+2], centroid[chunkStart+3]
+                )
+                let diff = q - c
+                totalDistance += (diff * diff).sum()
+            }
+            
+            return (index, sqrt(totalDistance))
+        }
+    }
+}
+
+// MARK: - Array to SIMD Conversion Extensions
+
+extension Array where Element == Float {
+    /// Convert array to SIMD2 if dimension matches
+    func toSIMD2() -> SIMD2<Float>? {
+        guard count == 2 else { return nil }
+        return SIMD2<Float>(self[0], self[1])
+    }
+    
+    /// Convert array to SIMD3 if dimension matches
+    func toSIMD3() -> SIMD3<Float>? {
+        guard count == 3 else { return nil }
+        return SIMD3<Float>(self[0], self[1], self[2])
+    }
+    
+    /// Convert array to SIMD4 if dimension matches
+    func toSIMD4() -> SIMD4<Float>? {
+        guard count == 4 else { return nil }
+        return SIMD4<Float>(self[0], self[1], self[2], self[3])
+    }
+    
+    /// Convert array to SIMD8 if dimension matches
+    func toSIMD8() -> SIMD8<Float>? {
+        guard count == 8 else { return nil }
+        return SIMD8<Float>(self[0], self[1], self[2], self[3],
+                           self[4], self[5], self[6], self[7])
+    }
+    
+    /// Convert array to SIMD16 if dimension matches
+    func toSIMD16() -> SIMD16<Float>? {
+        guard count == 16 else { return nil }
+        return SIMD16<Float>(
+            self[0], self[1], self[2], self[3],
+            self[4], self[5], self[6], self[7],
+            self[8], self[9], self[10], self[11],
+            self[12], self[13], self[14], self[15]
+        )
+    }
+    
+    /// Convert to appropriate SIMD type based on dimension
+    func toSIMD<T: SIMD>() -> T? where T.Scalar == Float {
+        if T.scalarCount == 2 {
+            return toSIMD2() as? T
+        } else if T.scalarCount == 3 {
+            return toSIMD3() as? T
+        } else if T.scalarCount == 4 {
+            return toSIMD4() as? T
+        } else if T.scalarCount == 8 {
+            return toSIMD8() as? T
+        } else if T.scalarCount == 16 {
+            return toSIMD16() as? T
+        }
+        return nil
+    }
+    
+    /// Convert to optimal SIMD type for the array dimension
+    func toOptimalSIMD() -> Any? {
+        switch count {
+        case 2: return toSIMD2()
+        case 3: return toSIMD3()
+        case 4: return toSIMD4()
+        case 8: return toSIMD8()
+        case 16: return toSIMD16()
+        default: return nil
+        }
     }
 }
 

@@ -41,7 +41,7 @@ public actor MetalCompute {
             maxBuffersPerSize: configuration.bufferPoolConfig.maxBuffersPerSize,
             preallocationSizes: configuration.bufferPoolConfig.preallocationSizes
         ))
-        self.pipelineManager = MetalPipelineManager(device: device)
+        self.pipelineManager = try MetalPipelineManager(device: device)
         self.profiler = configuration.enableProfiling ? MetalProfiler() : nil
         
         // Initialize compute engines
@@ -52,7 +52,7 @@ public actor MetalCompute {
             profiler: profiler
         )
         
-        self.matrixCompute = MetalMatrixCompute(
+        self.matrixCompute = await MetalMatrixCompute(
             device: device,
             bufferPool: bufferPool,
             pipelineManager: pipelineManager,

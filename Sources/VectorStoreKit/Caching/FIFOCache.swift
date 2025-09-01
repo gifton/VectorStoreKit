@@ -19,9 +19,12 @@ public actor BasicFIFOVectorCache<Vector: SIMD & Sendable>: VectorCache where Ve
     private var insertionOrder: [VectorID] = []
     private var currentMemoryUsage: Int = 0
     
-    // Priority queue for high-priority items
-    private var priorityQueue: [VectorID] = []
-    private let priorityProtectionRatio: Float = 0.2 // Protect 20% for high priority
+    // Two-queue model: protected (high priority) and open queues
+    private var protectedQueue: [VectorID] = []  // High/Critical priority items
+    private var openQueue: [VectorID] = []        // Normal/Low priority items
+    private let protectedRatio: Float = 0.2       // 20% reserved for protected queue
+    private var protectedMemoryUsage: Int = 0
+    private var openMemoryUsage: Int = 0
     
     // Statistics
     private var hitCount: Int = 0
@@ -35,7 +38,7 @@ public actor BasicFIFOVectorCache<Vector: SIMD & Sendable>: VectorCache where Ve
     
     // Performance tracking
     private let performanceAnalyzer = CachePerformanceAnalyzer<Vector>()
-    private var insertionTimes: [Date] = []
+    private var insertionTimes: [ContinuousClock.Instant] = []
     private let maxTimeTracking = 1000
     
     // Predictive prefetch engine
@@ -65,12 +68,10 @@ public actor BasicFIFOVectorCache<Vector: SIMD & Sendable>: VectorCache where Ve
     // MARK: - Core Operations
     
     public func get(id: VectorID) async -> Vector? {
-        let startTime = Date()
+        let startTime = ContinuousClock.now
         defer {
-            totalAccessTime += Date().timeIntervalSince(startTime)
-            Task {
-                await prefetchEngine.recordAccess(id: id)
-            }
+            let elapsed = ContinuousClock.now - startTime
+            totalAccessTime += Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
         }
         
         if let entry = cache[id] {
@@ -84,9 +85,17 @@ public actor BasicFIFOVectorCache<Vector: SIMD & Sendable>: VectorCache where Ve
                 accessCount: entry.accessCount + 1
             )
             cache[id] = updatedEntry
+            
+            // Record access synchronously
+            await prefetchEngine.recordAccess(id: id)
+            
             return entry.vector
         } else {
             missCount += 1
+            
+            // Record access synchronously
+            await prefetchEngine.recordAccess(id: id)
+            
             return nil
         }
     }
@@ -128,14 +137,25 @@ public actor BasicFIFOVectorCache<Vector: SIMD & Sendable>: VectorCache where Ve
         currentMemoryUsage -= entrySize
         
         insertionOrder.removeAll { $0 == id }
-        priorityQueue.removeAll { $0 == id }
+        protectedQueue.removeAll { $0 == id }
+        openQueue.removeAll { $0 == id }
+        
+        // Update memory tracking
+        if entry.priority == .high || entry.priority == .critical {
+            protectedMemoryUsage -= entrySize
+        } else {
+            openMemoryUsage -= entrySize
+        }
     }
     
     public func clear() async {
         evictionCount += cache.count
         cache.removeAll()
         insertionOrder.removeAll()
-        priorityQueue.removeAll()
+        protectedQueue.removeAll()
+        openQueue.removeAll()
+        protectedMemoryUsage = 0
+        openMemoryUsage = 0
         currentMemoryUsage = 0
         pendingBatch.removeAll()
         insertionTimes.removeAll()
@@ -143,6 +163,10 @@ public actor BasicFIFOVectorCache<Vector: SIMD & Sendable>: VectorCache where Ve
     
     public func contains(id: VectorID) async -> Bool {
         cache[id] != nil
+    }
+    
+    public func currentSize() async -> Int {
+        cache.count
     }
     
     // MARK: - Advanced Operations
@@ -303,6 +327,22 @@ public actor BasicFIFOVectorCache<Vector: SIMD & Sendable>: VectorCache where Ve
             ))
         }
         
+        // Two-queue analysis
+        let protectedRatio = Float(protectedMemoryUsage) / Float(configuration.maxMemory)
+        if protectedRatio < 0.1 {
+            recommendations.append(CacheRecommendation(
+                type: .configuration,
+                description: "Protected queue underutilized - consider adjusting priority thresholds",
+                expectedImprovement: 0.1
+            ))
+        } else if protectedRatio > 0.3 {
+            recommendations.append(CacheRecommendation(
+                type: .configuration,
+                description: "Protected queue overloaded - consider increasing protectedRatio",
+                expectedImprovement: 0.2
+            ))
+        }
+        
         return CachePerformanceAnalysis(
             hitRateOverTime: analysis.hitRateOverTime,
             memoryUtilization: analysis.memoryUtilization,
@@ -332,37 +372,35 @@ public actor BasicFIFOVectorCache<Vector: SIMD & Sendable>: VectorCache where Ve
         currentMemoryUsage += entrySize
         
         // Track insertion time
-        insertionTimes.append(Date())
+        insertionTimes.append(ContinuousClock.now)
         if insertionTimes.count > maxTimeTracking {
             insertionTimes.removeFirst()
         }
         
-        // Add to priority queue if high priority
+        // Add to appropriate queue based on priority
         if priority == .high || priority == .critical {
-            priorityQueue.append(id)
+            protectedQueue.append(id)
+            protectedMemoryUsage += entrySize
+        } else {
+            openQueue.append(id)
+            openMemoryUsage += entrySize
         }
     }
     
     private func processBatch() async {
         guard !pendingBatch.isEmpty else { return }
         
-        // Calculate total size needed
-        let totalSizeNeeded = pendingBatch.reduce(0) { sum, item in
-            sum + estimateVectorMemorySize(item.1)
-        }
-        
-        // Bulk eviction if needed
-        if currentMemoryUsage + totalSizeNeeded > configuration.maxMemory {
-            let targetSize = configuration.maxMemory - totalSizeNeeded
-            await bulkEvict(targetSize: targetSize)
-        }
-        
-        // Insert all pending items
+        // Insert pending items one by one with proper eviction
         let now = Date()
         for (id, vector, priority) in pendingBatch {
             let entrySize = estimateVectorMemorySize(vector)
             
-            // Skip if still not enough space
+            // Evict until we have space for this entry
+            while currentMemoryUsage + entrySize > configuration.maxMemory && !cache.isEmpty {
+                await evictOldest()
+            }
+            
+            // Skip if still not enough space (cache is empty but entry too large)
             if currentMemoryUsage + entrySize > configuration.maxMemory {
                 continue
             }
@@ -373,40 +411,51 @@ public actor BasicFIFOVectorCache<Vector: SIMD & Sendable>: VectorCache where Ve
             currentMemoryUsage += entrySize
             
             if priority == .high || priority == .critical {
-                priorityQueue.append(id)
+                protectedQueue.append(id)
+                protectedMemoryUsage += entrySize
+            } else {
+                openQueue.append(id)
+                openMemoryUsage += entrySize
             }
         }
         
         // Track batch insertion
-        insertionTimes.append(now)
+        insertionTimes.append(ContinuousClock.now)
         
         pendingBatch.removeAll()
     }
     
     private func evictOldest() async {
-        // Protect high-priority items
-        var candidateIndex = 0
+        // Two-queue eviction policy
+        let protectedLimit = Int(Float(configuration.maxMemory) * protectedRatio)
         
-        // Find first non-protected item
-        while candidateIndex < insertionOrder.count {
-            let id = insertionOrder[candidateIndex]
-            if let entry = cache[id],
-               entry.priority != .high && entry.priority != .critical {
-                break
+        // First, try to evict from open queue
+        if !openQueue.isEmpty {
+            let id = openQueue.removeFirst()
+            if let entry = cache[id] {
+                let entrySize = estimateVectorMemorySize(entry.vector)
+                cache.removeValue(forKey: id)
+                insertionOrder.removeAll { $0 == id }
+                currentMemoryUsage -= entrySize
+                openMemoryUsage -= entrySize
+                evictionCount += 1
+                await performanceAnalyzer.recordEviction(count: 1)
+                return
             }
-            candidateIndex += 1
         }
         
-        // If all items are protected, evict the oldest regardless
-        if candidateIndex >= insertionOrder.count {
-            candidateIndex = 0
-        }
-        
-        if candidateIndex < insertionOrder.count {
-            let id = insertionOrder[candidateIndex]
-            await remove(id: id)
-            evictionCount += 1
-            await performanceAnalyzer.recordEviction(count: 1)
+        // If open queue is empty or protected queue exceeds limit, evict from protected
+        if protectedMemoryUsage > protectedLimit && !protectedQueue.isEmpty {
+            let id = protectedQueue.removeFirst()
+            if let entry = cache[id] {
+                let entrySize = estimateVectorMemorySize(entry.vector)
+                cache.removeValue(forKey: id)
+                insertionOrder.removeAll { $0 == id }
+                currentMemoryUsage -= entrySize
+                protectedMemoryUsage -= entrySize
+                evictionCount += 1
+                await performanceAnalyzer.recordEviction(count: 1)
+            }
         }
     }
     
@@ -453,10 +502,25 @@ public actor BasicFIFOVectorCache<Vector: SIMD & Sendable>: VectorCache where Ve
         let wasHighPriority = oldPriority == .high || oldPriority == .critical
         let isHighPriority = newPriority == .high || newPriority == .critical
         
-        if wasHighPriority && !isHighPriority {
-            priorityQueue.removeAll { $0 == id }
-        } else if !wasHighPriority && isHighPriority {
-            priorityQueue.append(id)
+        if wasHighPriority != isHighPriority {
+            // Get the entry size for memory tracking
+            if let entry = cache[id] {
+                let entrySize = estimateVectorMemorySize(entry.vector)
+                
+                if wasHighPriority && !isHighPriority {
+                    // Move from protected to open queue
+                    protectedQueue.removeAll { $0 == id }
+                    openQueue.append(id)
+                    protectedMemoryUsage -= entrySize
+                    openMemoryUsage += entrySize
+                } else if !wasHighPriority && isHighPriority {
+                    // Move from open to protected queue
+                    openQueue.removeAll { $0 == id }
+                    protectedQueue.append(id)
+                    openMemoryUsage -= entrySize
+                    protectedMemoryUsage += entrySize
+                }
+            }
         }
     }
     

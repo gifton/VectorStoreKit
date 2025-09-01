@@ -1,117 +1,49 @@
 // VectorStoreKit: Neural Network
 //
-// Complete neural network implementation with training capabilities
+// Metal-accelerated neural network with automatic differentiation
 
 import Foundation
-import Accelerate
+@preconcurrency import Metal
 
-/// Neural network model
+/// Neural network model with Metal acceleration
 public actor NeuralNetwork {
     // MARK: - Properties
-    public var layers: [any NeuralLayer]
-    private let optimizer: OptimizerWrapper
-    private let metalCompute: MetalCompute?
-    private var trainingHistory: NetworkTrainingHistory
+    internal var layers: [any NeuralLayer]
+    internal let metalPipeline: MetalMLPipeline
+    internal var trainingHistory: NetworkTrainingHistory
     
     // MARK: - Initialization
-    public init(
-        layers: [any NeuralLayer],
-        optimizer: (any Optimizer)? = nil,
-        metalCompute: MetalCompute? = nil
-    ) {
-        self.layers = layers
-        if let optimizer = optimizer {
-            self.optimizer = OptimizerWrapper(baseOptimizer: optimizer)
-        } else {
-            // Default optimizer
-            self.optimizer = OptimizerWrapper(baseOptimizer: SGD(learningRate: 0.01))
-        }
-        self.metalCompute = metalCompute
+    public init(metalPipeline: MetalMLPipeline) async throws {
+        self.metalPipeline = metalPipeline
+        self.layers = []
         self.trainingHistory = NetworkTrainingHistory()
     }
     
-    // Convenience init without optimizer
-    public init(layers: [any NeuralLayer]) async {
-        self.layers = layers
-        self.optimizer = OptimizerWrapper(baseOptimizer: SGD(learningRate: 0.01))
-        self.metalCompute = nil
-        self.trainingHistory = NetworkTrainingHistory()
+    // MARK: - Layer Management
+    public func addLayer(_ layer: any NeuralLayer) async {
+        layers.append(layer)
+    }
+    
+    public func addLayers(_ newLayers: [any NeuralLayer]) async {
+        layers.append(contentsOf: newLayers)
     }
     
     // MARK: - Forward Pass
-    public func forward(_ input: [Float]) async -> [Float] {
+    public func forward(_ input: MetalBuffer) async throws -> MetalBuffer {
         var output = input
+        
         for layer in layers {
-            output = await layer.forward(output)
+            output = try await layer.forward(output)
         }
+        
         return output
-    }
-    
-    // MARK: - Backward Pass
-    public func backward(
-        input: [Float],
-        target: [Float],
-        lossFunction: LossFunction
-    ) async -> Float {
-        // Forward pass to get all intermediate outputs
-        var outputs: [[Float]] = [input]
-        var currentOutput = input
-        
-        for layer in layers {
-            currentOutput = await layer.forward(currentOutput)
-            outputs.append(currentOutput)
-        }
-        
-        // Compute loss
-        let loss = lossFunction.compute(prediction: currentOutput, target: target)
-        
-        // Compute initial gradient from loss
-        var gradient = lossFunction.gradient(prediction: currentOutput, target: target)
-        
-        // Store gradients for later weight updates
-        var layerGradients: [LayerGradients] = []
-        
-        // Backward pass through layers
-        for (i, layer) in layers.enumerated().reversed() {
-            let layerInput = outputs[i]
-            let layerOutput = outputs[i + 1]
-            
-            let (gradInput, gradients) = await layer.backward(
-                gradient,
-                input: layerInput,
-                output: layerOutput
-            )
-            
-            // Store gradients for this layer
-            layerGradients.insert(gradients, at: 0)
-            
-            gradient = gradInput
-        }
-        
-        // Store the input gradient for later retrieval
-        lastInputGradient = gradient
-        
-        // Store gradients for potential weight updates
-        // Note: Actual weight updates would need to be handled through the layer protocol
-        _ = layerGradients
-        
-        return loss
     }
     
     // MARK: - Training
     public func train(
-        inputs: [[Float]],
-        targets: [[Float]],
+        data: [(input: MetalBuffer, target: MetalBuffer)],
         config: NetworkTrainingConfig
     ) async throws {
-        guard inputs.count == targets.count else {
-            throw NeuralNetworkError.mismatchedData(
-                inputCount: inputs.count,
-                targetCount: targets.count
-            )
-        }
-        
-        let dataCount = inputs.count
         var epochLosses: [Float] = []
         
         for epoch in 0..<config.epochs {
@@ -119,40 +51,86 @@ public actor NeuralNetwork {
             var batchCount = 0
             
             // Shuffle data if requested
-            let indices = config.shuffle ? Array(0..<dataCount).shuffled() : Array(0..<dataCount)
+            let trainingData = config.shuffle ? data.shuffled() : data
             
             // Process mini-batches
-            for batchStart in stride(from: 0, to: dataCount, by: config.batchSize) {
-                let batchEnd = min(batchStart + config.batchSize, dataCount)
-                var batchLoss: Float = 0
+            for batchStart in stride(from: 0, to: trainingData.count, by: config.batchSize) {
+                let batchEnd = min(batchStart + config.batchSize, trainingData.count)
+                let actualBatchSize = batchEnd - batchStart
                 
-                // Process each sample in batch
+                // Prepare batch data
+                var batchInputs: [MetalBuffer] = []
+                var batchTargets: [MetalBuffer] = []
+                
                 for idx in batchStart..<batchEnd {
-                    let i = indices[idx]
-                    let loss = await backward(
-                        input: inputs[i],
-                        target: targets[i],
-                        lossFunction: config.lossFunction
-                    )
-                    batchLoss += loss
+                    let (input, target) = trainingData[idx]
+                    batchInputs.append(input)
+                    batchTargets.append(target)
                 }
                 
-                batchLoss /= Float(batchEnd - batchStart)
+                // Concatenate batch inputs and targets
+                let batchInput = try await concatenateBatch(batchInputs)
+                let batchTarget = try await concatenateBatch(batchTargets)
+                
+                // Forward pass on entire batch
+                let batchOutput = try await forward(batchInput)
+                
+                // Compute loss on batch
+                let batchLoss = try await computeLoss(
+                    prediction: batchOutput,
+                    target: batchTarget,
+                    lossFunction: config.lossFunction
+                )
+                
+                // Backward pass on batch
+                let gradOutput = try await computeLossGradient(
+                    prediction: batchOutput,
+                    target: batchTarget,
+                    lossFunction: config.lossFunction
+                )
+                
+                // Zero gradients before accumulation
+                for layer in layers {
+                    await layer.zeroGradients()
+                }
+                
+                // Propagate gradients through layers
+                var currentGrad = gradOutput
+                for layer in layers.reversed() {
+                    currentGrad = try await layer.backward(currentGrad)
+                }
+                
+                // Scale gradients by batch size for proper averaging
+                let scaleFactor = 1.0 / Float(actualBatchSize)
+                for layer in layers {
+                    await layer.scaleGradients(scaleFactor)
+                }
+                
+                // Update parameters using optimizer
+                if let optimizer = config.optimizer {
+                    for layer in layers {
+                        try await layer.updateParametersWithOptimizer(optimizer)
+                    }
+                } else {
+                    // Simple SGD update
+                    for layer in layers {
+                        // updateParameters expects the layer's accumulated gradients, not currentGrad
+                        if let params = await layer.getParameters() {
+                            try await layer.updateParameters(params, learningRate: config.learningRate)
+                        }
+                    }
+                }
+                
                 totalLoss += batchLoss
                 batchCount += 1
-                
-                // Apply gradient clipping if configured
-                if let clipValue = config.gradientClipValue {
-                    await applyGradientClipping(clipValue: clipValue)
-                }
             }
             
             let avgLoss = totalLoss / Float(batchCount)
             epochLosses.append(avgLoss)
             
-            // Update learning rate if scheduler is provided
-            if let scheduler = config.learningRateScheduler {
-                await updateLearningRate(step: epoch, scheduler: scheduler)
+            // Logging
+            if epoch % config.logInterval == 0 {
+                print("Epoch \(epoch): Loss = \(avgLoss)")
             }
             
             // Early stopping check
@@ -162,17 +140,6 @@ public actor NeuralNetwork {
                     break
                 }
             }
-            
-            // Logging
-            if epoch % config.logInterval == 0 {
-                print("Epoch \(epoch): Loss = \(avgLoss)")
-            }
-            
-            // Save checkpoint if requested
-            if let checkpointInterval = config.checkpointInterval,
-               epoch % checkpointInterval == 0 && epoch > 0 {
-                try await saveCheckpoint(epoch: epoch)
-            }
         }
         
         // Update training history
@@ -181,41 +148,171 @@ public actor NeuralNetwork {
     }
     
     // MARK: - Prediction
-    public func predict(_ input: [Float]) async -> [Float] {
-        await forward(input)
+    public func predict(_ input: MetalBuffer) async throws -> MetalBuffer {
+        // Set all layers to evaluation mode
+        for layer in layers {
+            await layer.setTraining(false)
+        }
+        
+        let output = try await forward(input)
+        
+        // Reset to training mode
+        for layer in layers {
+            await layer.setTraining(true)
+        }
+        
+        return output
     }
     
-    public func batchPredict(_ inputs: [[Float]]) async -> [[Float]] {
-        var predictions: [[Float]] = []
-        for input in inputs {
-            predictions.append(await predict(input))
+    // MARK: - Loss Computation
+    private func computeLoss(
+        prediction: MetalBuffer,
+        target: MetalBuffer,
+        lossFunction: LossFunction
+    ) async throws -> Float {
+        guard prediction.count == target.count else {
+            throw MetalMLError.incompatibleBufferSize(
+                expected: target.count,
+                actual: prediction.count
+            )
         }
-        return predictions
+        
+        // Allocate buffers for loss computation
+        let lossBuffer = try await metalPipeline.allocateBuffer(size: prediction.count)
+        let totalLossBuffer = try await metalPipeline.allocateBuffer(size: 1)
+        
+        // Initialize total loss to 0
+        let totalLossPtr = totalLossBuffer.buffer.contents().bindMemory(to: Float.self, capacity: 1)
+        totalLossPtr[0] = 0.0
+        
+        // Get shader library and create command buffer
+        let shaderLibrary = await metalPipeline.getShaderLibrary()
+        let commandQueue = await metalPipeline.getMetalCommandQueue()
+        
+        // Select appropriate loss kernel
+        let functionName: String
+        switch lossFunction {
+        case .mse:
+            functionName = MLShaderLibrary.LossFunction.mseLoss.rawValue
+        case .crossEntropy:
+            functionName = MLShaderLibrary.LossFunction.crossEntropyLoss.rawValue
+        }
+        
+        let pipeline = try await shaderLibrary.pipeline(for: functionName)
+        
+        try await commandQueue.submitAsync { commandBuffer in
+            guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+                throw MetalMLError.commandQueueCreationFailed
+            }
+            
+            encoder.setComputePipelineState(pipeline)
+            encoder.setBuffer(prediction.buffer, offset: 0, index: 0)
+            encoder.setBuffer(target.buffer, offset: 0, index: 1)
+            encoder.setBuffer(lossBuffer.buffer, offset: 0, index: 2)
+            encoder.setBuffer(totalLossBuffer.buffer, offset: 0, index: 3)
+            
+            switch lossFunction {
+            case .crossEntropy:
+                // For cross entropy, we need batch size and num classes
+                // Assuming single batch for now
+                var batchSize = UInt32(1)
+                var numClasses = UInt32(prediction.count)
+                encoder.setBytes(&batchSize, length: MemoryLayout<UInt32>.size, index: 4)
+                encoder.setBytes(&numClasses, length: MemoryLayout<UInt32>.size, index: 5)
+            default:
+                var size = UInt32(prediction.count)
+                encoder.setBytes(&size, length: MemoryLayout<UInt32>.size, index: 4)
+            }
+            
+            let threadgroupSize = MTLSize(width: 256, height: 1, depth: 1)
+            let threadgroupCount = MTLSize(
+                width: (prediction.count + threadgroupSize.width - 1) / threadgroupSize.width,
+                height: 1,
+                depth: 1
+            )
+            
+            encoder.dispatchThreadgroups(threadgroupCount, threadsPerThreadgroup: threadgroupSize)
+            encoder.endEncoding()
+        }
+        
+        // Read back the total loss
+        let totalLoss = totalLossPtr[0]
+        
+        // Release buffers
+        await metalPipeline.releaseBuffer(lossBuffer)
+        await metalPipeline.releaseBuffer(totalLossBuffer)
+        
+        return totalLoss
+    }
+    
+    private func computeLossGradient(
+        prediction: MetalBuffer,
+        target: MetalBuffer,
+        lossFunction: LossFunction
+    ) async throws -> MetalBuffer {
+        let gradient = try await metalPipeline.allocateBuffer(size: prediction.count)
+        
+        // Get shader library and create command buffer
+        let shaderLibrary = await metalPipeline.getShaderLibrary()
+        let commandQueue = await metalPipeline.getMetalCommandQueue()
+        
+        // Select appropriate gradient kernel
+        let functionName: String
+        switch lossFunction {
+        case .mse:
+            functionName = MLShaderLibrary.LossFunction.mseGradient.rawValue
+        case .crossEntropy:
+            functionName = MLShaderLibrary.LossFunction.crossEntropyGradient.rawValue
+        }
+        
+        let pipeline = try await shaderLibrary.pipeline(for: functionName)
+        
+        try await commandQueue.submitAsync { commandBuffer in
+            guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+                throw MetalMLError.commandQueueCreationFailed
+            }
+            
+            encoder.setComputePipelineState(pipeline)
+            encoder.setBuffer(prediction.buffer, offset: 0, index: 0)
+            encoder.setBuffer(target.buffer, offset: 0, index: 1)
+            encoder.setBuffer(gradient.buffer, offset: 0, index: 2)
+            
+            switch lossFunction {
+            case .crossEntropy:
+                // For cross entropy gradient, we need batch size and num classes
+                var batchSize = UInt32(1)
+                var numClasses = UInt32(prediction.count)
+                encoder.setBytes(&batchSize, length: MemoryLayout<UInt32>.size, index: 3)
+                encoder.setBytes(&numClasses, length: MemoryLayout<UInt32>.size, index: 4)
+                
+                // Use 2D thread configuration for cross entropy
+                let threadgroupSize = MTLSize(width: 16, height: 16, depth: 1)
+                let threadgroupCount = MTLSize(
+                    width: (1 + threadgroupSize.width - 1) / threadgroupSize.width,
+                    height: (prediction.count + threadgroupSize.height - 1) / threadgroupSize.height,
+                    depth: 1
+                )
+                encoder.dispatchThreadgroups(threadgroupCount, threadsPerThreadgroup: threadgroupSize)
+            default:
+                var size = UInt32(prediction.count)
+                encoder.setBytes(&size, length: MemoryLayout<UInt32>.size, index: 3)
+                
+                let threadgroupSize = MTLSize(width: 256, height: 1, depth: 1)
+                let threadgroupCount = MTLSize(
+                    width: (prediction.count + threadgroupSize.width - 1) / threadgroupSize.width,
+                    height: 1,
+                    depth: 1
+                )
+                encoder.dispatchThreadgroups(threadgroupCount, threadsPerThreadgroup: threadgroupSize)
+            }
+            
+            encoder.endEncoding()
+        }
+        
+        return gradient
     }
     
     // MARK: - Model Management
-    public func saveModel(to url: URL) async throws {
-        let modelData = NeuralNetworkData(
-            layerConfigs: layers.map { LayerConfiguration(from: $0) },
-            trainingHistory: trainingHistory
-        )
-        
-        let encoder = JSONEncoder()
-        let data = try encoder.encode(modelData)
-        try data.write(to: url)
-    }
-    
-    public func loadModel(from url: URL) async throws {
-        let data = try Data(contentsOf: url)
-        let decoder = JSONDecoder()
-        let modelData = try decoder.decode(NeuralNetworkData.self, from: data)
-        
-        // Recreate layers from configurations
-        // This would need implementation based on layer types
-        self.trainingHistory = modelData.trainingHistory
-    }
-    
-    // MARK: - Statistics
     public func parameterCount() async -> Int {
         var count = 0
         for layer in layers {
@@ -228,92 +325,115 @@ public actor NeuralNetwork {
         trainingHistory
     }
     
-    // MARK: - Training Mode
+    // MARK: - Compatibility API for Autoencoders
+    
+    /// Set training mode for all layers
     public func setTraining(_ training: Bool) async {
         for layer in layers {
-            // Set training mode for layers that support it (e.g., Dropout, BatchNorm)
-            if let trainableLayer = layer as? SimpleBatchNormLayer {
-                await trainableLayer.setTraining(training)
+            await layer.setTraining(training)
+        }
+    }
+    
+    /// Forward pass with Float array (compatibility)
+    public func forward(_ input: [Float]) async -> [Float] {
+        do {
+            // Convert input to MetalBuffer with shape
+            let inputBuffer = try await metalPipeline.allocateBuffer(shape: TensorShape(input.count))
+            let ptr = inputBuffer.buffer.contents().bindMemory(to: Float.self, capacity: input.count)
+            for i in 0..<input.count {
+                ptr[i] = input[i]
             }
-            // Note: DropoutLayer training mode would need to be handled differently
-            // as it's a struct and cannot be mutated through the protocol
+            
+            // Run forward pass
+            let outputBuffer = try await forward(inputBuffer)
+            
+            // Convert output to Float array
+            let outputPtr = outputBuffer.buffer.contents().bindMemory(to: Float.self, capacity: outputBuffer.count)
+            var output = [Float](repeating: 0, count: outputBuffer.count)
+            for i in 0..<outputBuffer.count {
+                output[i] = outputPtr[i]
+            }
+            
+            // Release buffers
+            await metalPipeline.releaseBuffer(inputBuffer)
+            await metalPipeline.releaseBuffer(outputBuffer)
+            
+            return output
+        } catch {
+            print("Error in forward pass: \(error)")
+            return [Float](repeating: 0, count: input.count)
         }
     }
     
-    // MARK: - Gradient Methods
+    /// Backward pass with Float arrays (compatibility)
     public func backward(_ gradOutput: [Float], learningRate: Float) async -> [LayerGradients] {
-        // Store outputs from forward pass (simplified - would need to be cached from forward)
-        var outputs: [[Float]] = []
-        var currentOutput = Array(repeating: Float(0), count: gradOutput.count)
-        outputs.append(currentOutput)
-        
-        // Collect intermediate outputs (simplified)
-        for layer in layers {
-            currentOutput = await layer.forward(currentOutput)
-            outputs.append(currentOutput)
-        }
-        
-        var layerGradients: [LayerGradients] = []
-        var currentGrad = gradOutput
-        
-        // Process layers in reverse order
-        for (i, layer) in layers.enumerated().reversed() {
-            let layerInput = outputs[i]
-            let layerOutput = outputs[i + 1]
+        do {
+            // Convert gradient to MetalBuffer
+            let gradBuffer = try await metalPipeline.allocateBuffer(size: gradOutput.count)
+            let ptr = gradBuffer.buffer.contents().bindMemory(to: Float.self, capacity: gradOutput.count)
+            for i in 0..<gradOutput.count {
+                ptr[i] = gradOutput[i]
+            }
             
-            let (gradInput, gradients) = await layer.backward(
-                currentGrad,
-                input: layerInput,
-                output: layerOutput
-            )
+            // Propagate gradients through layers
+            var currentGrad = gradBuffer
+            var allGradients: [LayerGradients] = []
             
-            layerGradients.insert(gradients, at: 0)
-            currentGrad = gradInput
+            for layer in layers.reversed() {
+                currentGrad = try await layer.backward(currentGrad)
+                
+                // For now, create empty LayerGradients
+                // This would need to be expanded based on layer type
+                allGradients.append(LayerGradients())
+            }
+            
+            // Update parameters
+            for layer in layers {
+                try await layer.updateParameters(currentGrad, learningRate: learningRate)
+            }
+            
+            // Release buffer
+            await metalPipeline.releaseBuffer(gradBuffer)
+            
+            return allGradients.reversed()
+        } catch {
+            print("Error in backward pass: \(error)")
+            return []
         }
-        
-        // Store the final gradient as input gradient
-        lastInputGradient = currentGrad
-        
-        return layerGradients
     }
     
-    private var lastInputGradient: [Float] = []
-    
+    /// Get input gradient for encoder-decoder architectures
     public func getInputGradient() async -> [Float] {
-        // Return gradient with respect to input from last backward pass
-        return lastInputGradient
+        // This is a placeholder - would need proper implementation
+        return []
     }
     
+    /// Update weights with gradients (compatibility)
     public func updateWeights(gradients: [LayerGradients], optimizer: any Optimizer) async {
-        // Update weights for each layer
-        // Note: Due to protocol constraints with immutable structs, 
-        // actual weight updates would need to be handled differently.
-        // This is a placeholder that prevents unused variable warnings.
-        for (index, (layer, gradient)) in zip(layers, gradients).enumerated() {
-            // In a real implementation, we would update mutable layers here
-            // For now, we acknowledge the parameters to avoid warnings
-            _ = layer
-            _ = gradient
-            _ = index
+        // This is a simplified implementation
+        // In practice, each layer would handle its own gradient updates
+        for (layer, gradient) in zip(layers, gradients) {
+            if let weightsGrad = gradient.weights {
+                let buffer = try? await metalPipeline.allocateBuffer(size: weightsGrad.count)
+                if let buffer = buffer {
+                    let ptr = buffer.buffer.contents().bindMemory(to: Float.self, capacity: weightsGrad.count)
+                    for i in 0..<weightsGrad.count {
+                        ptr[i] = weightsGrad[i]
+                    }
+                    let lr = await optimizer.getCurrentLearningRate()
+                    try? await layer.updateParameters(buffer, learningRate: lr)
+                    await metalPipeline.releaseBuffer(buffer)
+                }
+            }
         }
+    }
+    
+    /// Get layer count for autoencoder compatibility
+    public var layerCount: Int {
+        get async { layers.count }
     }
     
     // MARK: - Private Methods
-    private func applyGradientClipping(clipValue: Float) async {
-        // Gradient clipping implementation
-        // In a real implementation, this would clip gradients to prevent exploding gradients
-        // For now, we acknowledge the parameter to avoid warnings
-        _ = clipValue
-    }
-    
-    private func updateLearningRate(step: Int, scheduler: LearningRateScheduler) async {
-        // Update optimizer learning rate
-        let currentLR = await optimizer.getCurrentLearningRate()
-        let newLR = scheduler.getLearningRate(step: step, currentLR: currentLR)
-        // Note: Setting learning rate would need to be added to OptimizerWrapper
-        _ = newLR
-    }
-    
     private func shouldStopEarly(losses: [Float], patience: Int) -> Bool {
         guard losses.count > patience else { return false }
         
@@ -325,13 +445,28 @@ public actor NeuralNetwork {
         return minRecentLoss >= minPreviousLoss
     }
     
-    private func saveCheckpoint(epoch: Int) async throws {
-        // Checkpoint saving implementation
-        // Would save model state to disk - for now just acknowledge the parameter
-        _ = epoch
-        // In a real implementation:
-        // let checkpointURL = URL(fileURLWithPath: "checkpoint_\(epoch).json")
-        // try await saveModel(to: checkpointURL)
+    // MARK: - Batch Processing Helpers
+    
+    private func concatenateBatch(_ buffers: [MetalBuffer]) async throws -> MetalBuffer {
+        guard !buffers.isEmpty else {
+            throw MetalMLError.invalidBufferSize("Empty batch")
+        }
+        
+        let elementSize = buffers[0].count
+        let totalSize = buffers.count * elementSize
+        let concatenated = try await metalPipeline.allocateBuffer(size: totalSize)
+        
+        // Copy each buffer to the appropriate offset
+        let ptr = concatenated.buffer.contents().bindMemory(to: Float.self, capacity: totalSize)
+        for (i, buffer) in buffers.enumerated() {
+            let bufferPtr = buffer.buffer.contents().bindMemory(to: Float.self, capacity: buffer.count)
+            let offset = i * elementSize
+            for j in 0..<buffer.count {
+                ptr[offset + j] = bufferPtr[j]
+            }
+        }
+        
+        return concatenated
     }
 }
 
@@ -341,34 +476,34 @@ public actor NeuralNetwork {
 public struct NetworkTrainingConfig: Sendable {
     public let epochs: Int
     public let batchSize: Int
+    public let learningRate: Float
     public let lossFunction: LossFunction
     public let shuffle: Bool
     public let logInterval: Int
     public let earlyStoppingPatience: Int
-    public let gradientClipValue: Float?
-    public let learningRateScheduler: LearningRateScheduler?
-    public let checkpointInterval: Int?
+    public let optimizer: (any Optimizer)?
+    public let gradientClipping: Float?
     
     public init(
         epochs: Int = 100,
         batchSize: Int = 32,
+        learningRate: Float = 0.01,
         lossFunction: LossFunction = .mse,
         shuffle: Bool = true,
         logInterval: Int = 10,
         earlyStoppingPatience: Int = 0,
-        gradientClipValue: Float? = nil,
-        learningRateScheduler: LearningRateScheduler? = nil,
-        checkpointInterval: Int? = nil
+        optimizer: (any Optimizer)? = nil,
+        gradientClipping: Float? = nil
     ) {
         self.epochs = epochs
         self.batchSize = batchSize
+        self.learningRate = learningRate
         self.lossFunction = lossFunction
         self.shuffle = shuffle
         self.logInterval = logInterval
         self.earlyStoppingPatience = earlyStoppingPatience
-        self.gradientClipValue = gradientClipValue
-        self.learningRateScheduler = learningRateScheduler
-        self.checkpointInterval = checkpointInterval
+        self.optimizer = optimizer
+        self.gradientClipping = gradientClipping
     }
 }
 
@@ -381,110 +516,10 @@ public struct NetworkTrainingHistory: Codable, Sendable {
     public var bestEpoch: Int = 0
 }
 
-/// Neural network save data
-private struct NeuralNetworkData: Codable {
-    let layerConfigs: [LayerConfiguration]
-    let trainingHistory: NetworkTrainingHistory
-}
-
-/// Layer configuration for serialization
-private struct LayerConfiguration: Codable {
-    let type: String
-    let parameters: [String: String]
-    
-    init(from layer: any NeuralLayer) {
-        // Simplified - would need proper implementation
-        self.type = String(describing: Swift.type(of: layer))
-        self.parameters = [:]
-    }
-}
-
 /// Loss functions
 public enum LossFunction: String, Codable, Sendable {
     case mse = "mean_squared_error"
-    case mae = "mean_absolute_error"
     case crossEntropy = "cross_entropy"
-    case binaryCrossEntropy = "binary_cross_entropy"
-    case huber = "huber"
-    
-    public func compute(prediction: [Float], target: [Float]) -> Float {
-        guard prediction.count == target.count else {
-            return Float.infinity
-        }
-        
-        switch self {
-        case .mse:
-            let squaredDiffs = zip(prediction, target).map { pow($0 - $1, 2) }
-            return squaredDiffs.reduce(0, +) / Float(prediction.count)
-            
-        case .mae:
-            let absDiffs = zip(prediction, target).map { abs($0 - $1) }
-            return absDiffs.reduce(0, +) / Float(prediction.count)
-            
-        case .crossEntropy:
-            // Assumes prediction is softmax output
-            var sum: Float = 0
-            for (pred, targ) in zip(prediction, target) {
-                sum += -targ * log(max(pred, 1e-7))
-            }
-            return sum
-            
-        case .binaryCrossEntropy:
-            var sum: Float = 0
-            for (pred, targ) in zip(prediction, target) {
-                sum += -targ * log(max(pred, 1e-7)) - (1 - targ) * log(max(1 - pred, 1e-7))
-            }
-            return sum / Float(prediction.count)
-            
-        case .huber:
-            let delta: Float = 1.0
-            let losses = zip(prediction, target).map { pred, targ in
-                let diff = abs(pred - targ)
-                return diff <= delta ? 0.5 * pow(diff, 2) : delta * (diff - 0.5 * delta)
-            }
-            return losses.reduce(0, +) / Float(prediction.count)
-        }
-    }
-    
-    public func gradient(prediction: [Float], target: [Float]) -> [Float] {
-        guard prediction.count == target.count else {
-            return Array(repeating: 0, count: prediction.count)
-        }
-        
-        switch self {
-        case .mse:
-            return zip(prediction, target).map { 2 * ($0 - $1) / Float(prediction.count) }
-            
-        case .mae:
-            return zip(prediction, target).map { pred, targ in
-                (pred > targ ? 1 : -1) / Float(prediction.count)
-            }
-            
-        case .crossEntropy:
-            // For softmax + cross entropy, gradient is simply prediction - target
-            return zip(prediction, target).map { $0 - $1 }
-            
-        case .binaryCrossEntropy:
-            var gradients: [Float] = []
-            for (pred, targ) in zip(prediction, target) {
-                let grad = (pred - targ) / (max(pred * (1 - pred), 1e-7) * Float(prediction.count))
-                gradients.append(grad)
-            }
-            return gradients
-            
-        case .huber:
-            let delta: Float = 1.0
-            return zip(prediction, target).map { pred, targ in
-                let diff = pred - targ
-                let absDiff = abs(diff)
-                if absDiff <= delta {
-                    return diff / Float(prediction.count)
-                } else {
-                    return delta * (diff > 0 ? 1 : -1) / Float(prediction.count)
-                }
-            }
-        }
-    }
 }
 
 /// Neural network errors

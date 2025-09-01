@@ -19,20 +19,33 @@ public actor OptimizedProductQuantizer {
         self.baseQuantizer = try ProductQuantizer(config: configuration)
     }
     
-    /// Learn optimal rotation for better quantization
+    /// Learn optimal rotation for better quantization using PCA
     public func learnRotation(vectors: [[Float]]) async throws {
-        // Simplified OPQ implementation
-        // In practice, would learn rotation matrix that minimizes quantization error
+        guard !vectors.isEmpty else {
+            throw QuantizationError.insufficientTrainingData(required: 1, provided: 0)
+        }
+        
         let dimensions = vectors.first?.count ?? 0
-        rotationMatrix = Array(
-            repeating: Array(repeating: Float(0), count: dimensions),
-            count: dimensions
+        guard dimensions > 0 else {
+            throw QuantizationError.dimensionMismatch
+        }
+        
+        // Use PCA to learn optimal rotation matrix
+        // The eigenvectors form an orthogonal rotation that maximizes variance
+        // This is the basis of Optimized Product Quantization (OPQ)
+        
+        // Create VectorMLPipeline to compute eigenvectors
+        let mlPipeline = try await VectorMLPipeline()
+        
+        // Compute top eigenvectors (we need all dimensions for full rotation)
+        let (eigenvectors, _) = try await mlPipeline.computeTopEigenvectors(
+            from: vectors,
+            numComponents: dimensions
         )
         
-        // Identity matrix for now
-        for i in 0..<dimensions {
-            rotationMatrix![i][i] = 1.0
-        }
+        // The eigenvectors form our rotation matrix
+        // Each eigenvector is a row of the rotation matrix
+        rotationMatrix = eigenvectors
     }
     
     /// Train the quantizer with rotation

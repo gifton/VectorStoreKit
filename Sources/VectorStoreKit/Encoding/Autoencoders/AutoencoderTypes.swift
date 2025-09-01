@@ -31,12 +31,12 @@ public protocol Autoencoder: Actor {
 public protocol AutoencoderConfiguration: Sendable, Codable {
     var inputDimensions: Int { get }
     var encodedDimensions: Int { get }
-    var training: TrainingConfiguration { get }
+    var training: AutoencoderTrainingConfiguration { get }
     var regularization: RegularizationConfig { get }
 }
 
 /// Training configuration shared across all autoencoders
-public struct TrainingConfiguration: Sendable, Codable {
+public struct AutoencoderTrainingConfiguration: Sendable, Codable {
     public let batchSize: Int
     public let epochs: Int
     public let learningRate: Float

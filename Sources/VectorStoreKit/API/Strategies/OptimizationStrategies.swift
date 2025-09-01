@@ -8,7 +8,7 @@ import CoreML
 // MARK: - Supporting Types
 
 /// Performance metrics for optimization
-public struct PerformanceMetrics: Sendable {
+public struct OptimizationMetrics: Sendable {
     public let searchLatency: LatencyProfile
     public let insertLatency: LatencyProfile
     public let insertThroughput: Double
@@ -39,7 +39,7 @@ public struct PerformanceMetrics: Sendable {
 /// Production ML-driven optimization strategy
 public struct MLProductionOptimizationStrategy: OptimizationStrategyProtocol, Sendable {
     public typealias ModelType = MLOptimizationModel
-    public typealias MetricsType = PerformanceMetrics
+    public typealias MetricsType = OptimizationMetrics
     
     public let identifier = "ml-production"
     public let characteristics = OptimizationCharacteristics(
@@ -57,7 +57,7 @@ public struct MLProductionOptimizationStrategy: OptimizationStrategyProtocol, Se
     
     public func optimize<Index: VectorIndex>(
         index: Index,
-        metrics: PerformanceMetrics
+        metrics: OptimizationMetrics
     ) async throws {
         // Create optimization model
         let model = try await createOptimizationModel(for: index, metrics: metrics)
@@ -74,7 +74,7 @@ public struct MLProductionOptimizationStrategy: OptimizationStrategyProtocol, Se
     
     private func createOptimizationModel<Index: VectorIndex>(
         for index: Index,
-        metrics: PerformanceMetrics
+        metrics: OptimizationMetrics
     ) async throws -> MLOptimizationModel {
         return MLOptimizationModel(
             configuration: modelConfiguration,
@@ -106,7 +106,7 @@ public struct MLProductionOptimizationStrategy: OptimizationStrategyProtocol, Se
 /// Research ML optimization with experimental features
 public struct MLResearchOptimizationStrategy: OptimizationStrategyProtocol, Sendable {
     public typealias ModelType = MLOptimizationModel
-    public typealias MetricsType = DetailedPerformanceMetrics
+    public typealias MetricsType = DetailedOptimizationMetrics
     
     public let identifier = "ml-research"
     public let characteristics = OptimizationCharacteristics(
@@ -129,7 +129,7 @@ public struct MLResearchOptimizationStrategy: OptimizationStrategyProtocol, Send
     
     public func optimize<Index: VectorIndex>(
         index: Index,
-        metrics: DetailedPerformanceMetrics
+        metrics: DetailedOptimizationMetrics
     ) async throws {
         // Create advanced optimization model
         let model = try await createAdvancedModel(for: index, metrics: metrics)
@@ -150,7 +150,7 @@ public struct MLResearchOptimizationStrategy: OptimizationStrategyProtocol, Send
     
     private func createAdvancedModel<Index: VectorIndex>(
         for index: Index,
-        metrics: DetailedPerformanceMetrics
+        metrics: DetailedOptimizationMetrics
     ) async throws -> MLOptimizationModel {
         var model = MLOptimizationModel(
             configuration: modelConfiguration,
@@ -171,7 +171,7 @@ public struct MLResearchOptimizationStrategy: OptimizationStrategyProtocol, Send
     
     private func generateAndTestRecommendations<Index: VectorIndex>(
         model: MLOptimizationModel,
-        analysis: PerformanceAnalysis,
+        analysis: OptimizationAnalysis,
         index: Index
     ) async throws -> [OptimizationRecommendation] {
         // Generate multiple recommendation sets
@@ -217,7 +217,7 @@ public struct MLResearchOptimizationStrategy: OptimizationStrategyProtocol, Send
 /// Aggressive optimization for maximum performance
 public struct AggressiveOptimizationStrategy: OptimizationStrategyProtocol, Sendable {
     public typealias ModelType = Void
-    public typealias MetricsType = PerformanceMetrics
+    public typealias MetricsType = OptimizationMetrics
     
     public let identifier = "aggressive"
     public let characteristics = OptimizationCharacteristics(
@@ -231,7 +231,7 @@ public struct AggressiveOptimizationStrategy: OptimizationStrategyProtocol, Send
     
     public func optimize<Index: VectorIndex>(
         index: Index,
-        metrics: PerformanceMetrics
+        metrics: OptimizationMetrics
     ) async throws {
         // Continuously monitor and optimize
         let currentStats = await index.statistics()
@@ -257,12 +257,12 @@ public struct AggressiveOptimizationStrategy: OptimizationStrategyProtocol, Send
         return true // Simplified - always compact in aggressive mode
     }
     
-    private func shouldRebalance(metrics: PerformanceMetrics) -> Bool {
+    private func shouldRebalance(metrics: OptimizationMetrics) -> Bool {
         // Check if rebalancing would help
         return metrics.searchLatency.p99 > 0.01 // 10ms threshold
     }
     
-    private func isPerformanceDegraded(metrics: PerformanceMetrics) -> Bool {
+    private func isPerformanceDegraded(metrics: OptimizationMetrics) -> Bool {
         return metrics.searchLatency.p99 > 0.02 || metrics.insertLatency.p99 > 0.05
     }
 }
@@ -272,7 +272,7 @@ public struct AggressiveOptimizationStrategy: OptimizationStrategyProtocol, Send
 /// Genetic algorithm-based optimization strategy
 public struct GeneticOptimizationStrategy: OptimizationStrategyProtocol, Sendable {
     public typealias ModelType = GeneticAlgorithm
-    public typealias MetricsType = PerformanceMetrics
+    public typealias MetricsType = OptimizationMetrics
     
     public let identifier = "genetic"
     public let characteristics = OptimizationCharacteristics(
@@ -290,7 +290,7 @@ public struct GeneticOptimizationStrategy: OptimizationStrategyProtocol, Sendabl
     
     public func optimize<Index: VectorIndex>(
         index: Index,
-        metrics: PerformanceMetrics
+        metrics: OptimizationMetrics
     ) async throws {
         let ga = GeneticAlgorithm(configuration: configuration)
         
@@ -355,27 +355,27 @@ public struct MLOptimizationModel: Sendable {
         // Enable AutoML features
     }
     
-    func analyzePerformance(_ metrics: PerformanceMetrics) async throws -> PerformanceAnalysis {
-        PerformanceAnalysis()
+    func analyzePerformance(_ metrics: OptimizationMetrics) async throws -> OptimizationAnalysis {
+        OptimizationAnalysis()
     }
     
-    func comprehensiveAnalysis(_ metrics: DetailedPerformanceMetrics) async throws -> PerformanceAnalysis {
-        PerformanceAnalysis()
+    func comprehensiveAnalysis(_ metrics: DetailedOptimizationMetrics) async throws -> OptimizationAnalysis {
+        OptimizationAnalysis()
     }
     
-    func generateRecommendations(_ analysis: PerformanceAnalysis) async throws -> [OptimizationRecommendation] {
+    func generateRecommendations(_ analysis: OptimizationAnalysis) async throws -> [OptimizationRecommendation] {
         []
     }
     
     func generateCandidateRecommendations(
-        _ analysis: PerformanceAnalysis,
+        _ analysis: OptimizationAnalysis,
         count: Int
     ) async throws -> [[OptimizationRecommendation]] {
         []
     }
 }
 
-public struct PerformanceAnalysis: Sendable {
+public struct OptimizationAnalysis: Sendable {
     public let bottlenecks: [PerformanceBottleneck]
     public let opportunities: [OptimizationOpportunity]
     public let risks: [OptimizationRisk]
@@ -423,11 +423,11 @@ public enum ExperimentalFeature: Sendable {
     case quantumInspired
 }
 
-public struct DetailedPerformanceMetrics: Sendable {
-    public let basic: PerformanceMetrics
+public struct DetailedOptimizationMetrics: Sendable {
+    public let basic: OptimizationMetrics
     public let advanced: AdvancedMetrics
     
-    public init(basic: PerformanceMetrics = PerformanceMetrics(), advanced: AdvancedMetrics = AdvancedMetrics()) {
+    public init(basic: OptimizationMetrics = OptimizationMetrics(), advanced: AdvancedMetrics = AdvancedMetrics()) {
         self.basic = basic
         self.advanced = advanced
     }
@@ -519,7 +519,7 @@ public struct IndexParameters {
 /// Quantum-inspired optimization strategy (experimental)
 public struct QuantumInspiredOptimizationStrategy: OptimizationStrategyProtocol, Sendable {
     public typealias ModelType = QuantumOptimizer
-    public typealias MetricsType = PerformanceMetrics
+    public typealias MetricsType = OptimizationMetrics
     
     public let identifier = "quantum-inspired"
     public let characteristics = OptimizationCharacteristics(
@@ -533,7 +533,7 @@ public struct QuantumInspiredOptimizationStrategy: OptimizationStrategyProtocol,
     
     public func optimize<Index: VectorIndex>(
         index: Index,
-        metrics: PerformanceMetrics
+        metrics: OptimizationMetrics
     ) async throws {
         let optimizer = QuantumOptimizer()
         
@@ -549,7 +549,7 @@ public struct QuantumInspiredOptimizationStrategy: OptimizationStrategyProtocol,
     
     private func createOptimizationLandscape<Index: VectorIndex>(
         for index: Index,
-        metrics: PerformanceMetrics
+        metrics: OptimizationMetrics
     ) async throws -> OptimizationLandscape {
         OptimizationLandscape()
     }

@@ -52,6 +52,11 @@ public actor NoOpVectorCache<Vector: SIMD & Sendable>: VectorCache where Vector.
         false
     }
     
+    public func currentSize() async -> Int {
+        // Always returns 0 for no-op cache
+        0
+    }
+    
     // MARK: - Advanced Operations
     
     public func preload(ids: [VectorID]) async {

@@ -5,25 +5,7 @@
 import Foundation
 import Metal
 
-/// Statistics for buffer pool usage
-public struct BufferPoolStatistics: Sendable {
-    public let totalAllocated: Int
-    public let totalInUse: Int
-    public let hitRate: Float
-    public let averageAllocationSize: Int
-    
-    public init(
-        totalAllocated: Int = 0,
-        totalInUse: Int = 0,
-        hitRate: Float = 0.0,
-        averageAllocationSize: Int = 0
-    ) {
-        self.totalAllocated = totalAllocated
-        self.totalInUse = totalInUse
-        self.hitRate = hitRate
-        self.averageAllocationSize = averageAllocationSize
-    }
-}
+// BufferPoolStatistics is defined in MetalMLBufferPool.swift
 
 /// Manages a pool of reusable Metal buffers
 public actor MetalBufferPool {
@@ -35,7 +17,9 @@ public actor MetalBufferPool {
     private let configuration: Configuration
     private var availableBuffers: [Int: [MTLBuffer]] = [:]
     private var inUseBuffers: Set<ObjectIdentifier> = []
-    private var statistics = BufferPoolStatistics()
+    private var totalBuffers = 0
+    private var memoryUsage = 0
+    private var sizeDistribution: [Int: Int] = [:]
     
     public init(device: MTLDevice, configuration: Configuration = .research) {
         self.device = device
@@ -49,7 +33,22 @@ public actor MetalBufferPool {
     
     /// Get statistics about buffer pool usage
     public func getStatistics() -> BufferPoolStatistics {
-        return statistics
+        let reuseCount = sizeDistribution.values.reduce(0, +)
+        let hitRate = totalBuffers > 0 ? Float(reuseCount) / Float(totalBuffers) : 0.0
+        
+        return BufferPoolStatistics(
+            poolName: "MetalBufferPool",
+            totalAllocations: totalBuffers,
+            currentAllocations: inUseBuffers.count,
+            peakAllocations: totalBuffers,
+            totalBytesAllocated: memoryUsage,
+            currentBytesAllocated: memoryUsage,
+            peakBytesAllocated: memoryUsage,
+            reuseCount: reuseCount,
+            hitRate: hitRate,
+            averageAllocationSize: totalBuffers > 0 ? memoryUsage / totalBuffers : 0,
+            fragmentationRatio: 0.0
+        )
     }
     
     /// Allocate or reuse a buffer of the specified size
@@ -155,7 +154,29 @@ public actor MetalBufferPool {
     }
 }
 
-/// Errors for buffer pool operations
-public enum MetalBufferPoolError: Error {
-    case allocationFailed
+// MARK: - Protocol Conformance
+
+extension MetalBufferPool: MemoryManagedBufferPool {
+    /// Clear all cached buffers to free memory
+    public func clearAll() async {
+        // Clear all available buffers
+        availableBuffers.removeAll()
+        // Note: in-use buffers remain allocated until explicitly released
+    }
+    
+    /// Get current memory usage in bytes
+    public func getCurrentMemoryUsage() async -> Int {
+        var totalMemory = 0
+        
+        // Calculate memory from available buffers
+        for (size, buffers) in availableBuffers {
+            totalMemory += size * buffers.count
+        }
+        
+        // Note: We can't easily calculate in-use buffer sizes without tracking them
+        // This is a limitation of the current implementation
+        return totalMemory
+    }
 }
+
+// MetalBufferPoolError is defined in Core/MetalAccelerationTypes.swift

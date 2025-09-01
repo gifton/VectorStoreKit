@@ -319,15 +319,66 @@ public enum GuaranteeType: String, Codable, Sendable {
 
 // MARK: - Search Strategy
 
-/// Advanced search strategies for different use cases
+/// Search strategies with different performance and accuracy trade-offs
+///
+/// SearchStrategy determines how the vector search is performed, allowing
+/// you to optimize for speed, accuracy, or adapt to your specific use case.
 public enum SearchStrategy: String, Codable, Sendable, CaseIterable {
-    case exact = "exact"               // Exact k-NN search
-    case approximate = "approximate"   // Fast approximate search
-    case adaptive = "adaptive"         // Adapts based on query
-    case learned = "learned"           // ML-guided search
-    case hybrid = "hybrid"             // Combines multiple strategies
-    case anytime = "anytime"           // Improves over time
-    case multimodal = "multimodal"     // Cross-modal search
+    /// Exact k-nearest neighbor search
+    ///
+    /// Guarantees finding the true nearest neighbors by comparing against
+    /// all vectors. Slowest but most accurate option.
+    /// - Complexity: O(n) where n is the number of vectors
+    /// - Use when: Accuracy is critical and dataset is small
+    case exact = "exact"
+    
+    /// Fast approximate nearest neighbor search
+    ///
+    /// Uses index structures (HNSW, IVF, etc.) to find approximate neighbors
+    /// quickly. May miss some true neighbors but is much faster.
+    /// - Complexity: O(log n) typical
+    /// - Use when: Speed is important and >90% recall is acceptable
+    case approximate = "approximate"
+    
+    /// Adaptive strategy that chooses based on query characteristics
+    ///
+    /// Automatically selects between exact and approximate search based on
+    /// factors like query complexity, dataset size, and available resources.
+    /// - Complexity: Variable
+    /// - Use when: You want the system to optimize automatically
+    case adaptive = "adaptive"
+    
+    /// Machine learning-guided search
+    ///
+    /// Uses trained models to optimize search paths and improve accuracy
+    /// while maintaining speed. Requires training on your data.
+    /// - Complexity: O(log n) with better constants
+    /// - Use when: You have query patterns and can train the model
+    case learned = "learned"
+    
+    /// Combines multiple search strategies
+    ///
+    /// Runs multiple strategies in parallel or sequence and merges results
+    /// for improved recall at the cost of some performance.
+    /// - Complexity: Depends on strategies used
+    /// - Use when: Maximum recall is needed
+    case hybrid = "hybrid"
+    
+    /// Progressive search that improves results over time
+    ///
+    /// Returns initial results quickly and continues refining them,
+    /// useful for interactive applications.
+    /// - Complexity: O(log n) initial, O(n) worst case
+    /// - Use when: You need fast initial results with refinement
+    case anytime = "anytime"
+    
+    /// Cross-modal search across different data types
+    ///
+    /// Specialized strategy for searching across different modalities
+    /// (text, image, audio) with appropriate transformations.
+    /// - Complexity: Variable based on modalities
+    /// - Use when: Searching across different data types
+    case multimodal = "multimodal"
     
     /// Expected quality characteristics
     public var characteristics: StrategyCharacteristics {
